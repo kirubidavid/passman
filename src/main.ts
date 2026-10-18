@@ -9,12 +9,14 @@ interface EntrySummary {
   title: string;
   username: string;
   website: string;
-  notes: string;
   favorite: boolean;
   hasTotp: boolean;
   updatedAt: number;
 }
-interface EntryDetails extends EntrySummary { password: string }
+interface EntryDetails extends EntrySummary {
+  password: string;
+  notes: string;
+}
 interface EntryInput {
   id: string;
   title: string;
@@ -228,6 +230,14 @@ function closeModal() {
   stopTotpRefresh();
   document.querySelector<HTMLElement>("#modal-root")?.replaceChildren();
   passwordVisible = false;
+}
+
+function clearUnlockedFrontendState() {
+  entries = [];
+  generatedPassword = "";
+  searchTerm = "";
+  passwordVisible = false;
+  closeModal();
 }
 
 function openVaultSettings() {
@@ -585,11 +595,8 @@ async function lockVault() {
   lockInProgress = true;
   try {
     stopAutoLock();
-    closeModal();
     await invoke("lock_vault");
-    entries = [];
-    generatedPassword = "";
-    searchTerm = "";
+    clearUnlockedFrontendState();
     document.removeEventListener("keydown", keyboardShortcuts);
     const status = await invoke<Status>("vault_status");
     authView(status.exists);
