@@ -2,7 +2,8 @@ use crate::{
     crypto::{derive_key_with_kdf, open, seal},
     models::{
         CURRENT_KDF, CURRENT_VAULT_VERSION, Entry, KEY_LEN, KdfParameters, LEGACY_V1_KDF,
-        NONCE_LEN, SALT_LEN, UnlockedVault, VAULT_FILE, VaultFile,
+        NONCE_LEN, SALT_LEN, UnlockedVault, VAULT_FILE, VaultData, VaultFile,
+        VaultPreferences,
     },
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -121,7 +122,14 @@ pub(crate) fn write_vault(
     key: &[u8; KEY_LEN],
     entries: &[Entry],
 ) -> Result<(), String> {
-    write_vault_with_kdf(path, salt, key, &CURRENT_KDF, entries)
+    write_vault_with_kdf(
+        path,
+        salt,
+        key,
+        &CURRENT_KDF,
+        entries,
+        &VaultPreferences::default(),
+    )
 }
 
 pub(crate) fn write_vault_with_kdf(
@@ -130,8 +138,10 @@ pub(crate) fn write_vault_with_kdf(
     key: &[u8; KEY_LEN],
     kdf: &KdfParameters,
     entries: &[Entry],
+    preferences: &VaultPreferences,
 ) -> Result<(), String> {
-    let (nonce, ciphertext) = seal(key, entries)?;
+    let preferences = preferences.validate()?;
+    let (nonce, ciphertext) = seal(key, entries, &preferences)?;
     let file = VaultFile {
         version: CURRENT_VAULT_VERSION,
         kdf: Some(*kdf),
@@ -161,7 +171,7 @@ pub(crate) fn load_vault(
         Zeroizing<[u8; KEY_LEN]>,
         [u8; SALT_LEN],
         KdfParameters,
-        Vec<Entry>,
+        VaultData,
     ),
     String,
 > {
@@ -177,7 +187,7 @@ pub(crate) fn load_vault_data(
         Zeroizing<[u8; KEY_LEN]>,
         [u8; SALT_LEN],
         KdfParameters,
-        Vec<Entry>,
+        VaultData,
     ),
     String,
 > {
@@ -199,8 +209,8 @@ pub(crate) fn load_vault_data(
         .decode(file.ciphertext)
         .map_err(|_| "Invalid vault ciphertext".to_string())?;
     let key = derive_key_with_kdf(password, &salt, &kdf)?;
-    let entries = open(&key, &nonce, &ciphertext)?;
-    Ok((key, salt, kdf, entries))
+    let data = open(&key, &nonce, &ciphertext)?;
+    Ok((key, salt, kdf, data))
 }
 
 pub(crate) fn persist(path: &PathBuf, vault: &UnlockedVault) -> Result<(), String> {
@@ -210,6 +220,7 @@ pub(crate) fn persist(path: &PathBuf, vault: &UnlockedVault) -> Result<(), Strin
         &vault.key,
         &vault.kdf,
         &vault.entries,
+        &vault.preferences,
     )
 }
 
@@ -250,6 +261,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_strength_score: u8::MAX,
         }
     }
 
@@ -264,6 +276,9 @@ mod tests {
             salt,
             kdf: CURRENT_KDF,
             entries: Vec::new(),
+            preferences: VaultPreferences {
+                password_age_limit_days: 120,
+            },
         };
         persist(&path, &vault).unwrap();
 
@@ -273,22 +288,25 @@ mod tests {
         persist(&path, &vault).unwrap();
         let (_, _, _, created) =
             load_vault(&path, "persistence lifecycle password").unwrap();
-        assert_eq!(created.len(), 1);
-        assert_eq!(created[0].title, "Personal Mail");
+        assert_eq!(created.entries.len(), 1);
+        assert_eq!(created.entries[0].title, "Personal Mail");
+        assert_eq!(created.preferences.password_age_limit_days, 120);
 
         vault.entries[0].title = "Updated Mail".into();
         vault.entries[0].password = "updated secret".into();
         persist(&path, &vault).unwrap();
         let (_, _, _, updated) =
             load_vault(&path, "persistence lifecycle password").unwrap();
-        assert_eq!(updated[0].title, "Updated Mail");
-        assert_eq!(updated[0].password, "updated secret");
+        assert_eq!(updated.entries[0].title, "Updated Mail");
+        assert_eq!(updated.entries[0].password, "updated secret");
+        assert_eq!(updated.preferences.password_age_limit_days, 120);
 
         vault.entries.clear();
         persist(&path, &vault).unwrap();
         let (_, _, _, deleted) =
             load_vault(&path, "persistence lifecycle password").unwrap();
-        assert!(deleted.is_empty());
+        assert!(deleted.entries.is_empty());
+        assert_eq!(deleted.preferences.password_age_limit_days, 120);
         remove_test_directory(&directory);
     }
 
@@ -316,7 +334,8 @@ mod tests {
         let salt = fresh_salt();
         let key = derive_key("correct persistence password", &salt).unwrap();
         let entries = vec![entry("mail", "Mail", "secret")];
-        let (nonce, ciphertext) = seal(&key, &entries).unwrap();
+        let (nonce, ciphertext) =
+            seal(&key, &entries, &VaultPreferences::default()).unwrap();
         let mut file = VaultFile {
             version: CURRENT_VAULT_VERSION,
             kdf: Some(CURRENT_KDF),
@@ -343,7 +362,8 @@ mod tests {
         let salt = fresh_salt();
         let key = derive_key("envelope validation password", &salt).unwrap();
         let entries = vec![entry("mail", "Mail", "secret")];
-        let (nonce, ciphertext) = seal(&key, &entries).unwrap();
+        let (nonce, ciphertext) =
+            seal(&key, &entries, &VaultPreferences::default()).unwrap();
         let mut file = VaultFile {
             version: CURRENT_VAULT_VERSION,
             kdf: Some(CURRENT_KDF),

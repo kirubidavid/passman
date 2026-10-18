@@ -20,6 +20,7 @@ pub fn run() {
             commands::change_master_password,
             commands::reset_vault,
             commands::list_entries,
+            commands::set_vault_preferences,
             commands::get_entry,
             commands::get_entry_password,
             commands::get_totp_code,

@@ -7,7 +7,11 @@ import {
   renderEntries,
   setFilter,
 } from "./rendering";
-import { clearUnlockedState, createAutoLock, state } from "./state";
+import {
+  applyVaultSnapshot,
+  clearUnlockedState,
+  createAutoLock,
+} from "./state";
 import { $, escapeHtml, fail, icon, toast } from "./ui";
 import { vaultApi } from "./vault-api";
 
@@ -31,7 +35,7 @@ async function resetVault() {
 }
 
 async function loadDashboard() {
-  state.entries = await vaultApi.listEntries();
+  applyVaultSnapshot(await vaultApi.listEntries());
   dashboardShell();
   setFilter("All items");
   await generatePassword();
@@ -82,7 +86,8 @@ configureRendering({
 
 async function boot() {
   if (!("__TAURI_INTERNALS__" in window)) {
-    $("#app").innerHTML = `<main class="auth-shell"><section class="auth-card"><div class="brand-lockup"><span class="brand-icon">${icon("shield", 23)}</span>passman<span class="brand-period">.</span></div><h1>Open Passman as a desktop app</h1><p class="auth-copy">The development web page does not have access to the secure Rust vault. Launch Passman with <strong>npm run tauri dev</strong>.</p></section></main>`;
+    $("#app").innerHTML =
+      `<main class="auth-shell"><section class="auth-card"><div class="brand-lockup"><span class="brand-icon">${icon("shield", 23)}</span>passman<span class="brand-period">.</span></div><h1>Open Passman as a desktop app</h1><p class="auth-copy">The development web page does not have access to the secure Rust vault. Launch Passman with <strong>npm run tauri dev</strong>.</p></section></main>`;
     return;
   }
   try {
@@ -90,7 +95,8 @@ async function boot() {
     if (status.unlocked) await loadDashboard();
     else authView(status.exists);
   } catch (error) {
-    $("#app").innerHTML = `<main class="auth-shell"><section class="auth-card"><div class="brand-lockup"><span class="brand-icon">${icon("shield", 23)}</span>passman<span class="brand-period">.</span></div><h1>Unable to open Passman</h1><p class="auth-copy">${escapeHtml(String(error))}</p><p class="auth-warning">When developing on Linux, install WebKitGTK and the Tauri system prerequisites, then relaunch.</p></section></main>`;
+    $("#app").innerHTML =
+      `<main class="auth-shell"><section class="auth-card"><div class="brand-lockup"><span class="brand-icon">${icon("shield", 23)}</span>passman<span class="brand-period">.</span></div><h1>Unable to open Passman</h1><p class="auth-copy">${escapeHtml(String(error))}</p><p class="auth-warning">When developing on Linux, install WebKitGTK and the Tauri system prerequisites, then relaunch.</p></section></main>`;
   }
 }
 

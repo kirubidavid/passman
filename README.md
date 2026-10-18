@@ -8,6 +8,7 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Generate 8–128 character passwords with selectable uppercase, lowercase, number, and symbol sets. Rust uses rejection-sampled operating-system cryptographic randomness.
 - Save, search, edit, favorite, copy, and delete login entries.
 - Track password age independently from other entry edits, with green, yellow, and red indicators based on a configurable global limit that defaults to 90 days.
+- Review password health with Rust-only exact duplicate detection, offline zxcvbn strength scoring, issue counts, clear text labels, and urgency sorting. Password values are not included in frontend summaries.
 - Store an optional authenticator setup key with an entry, then generate standards-based six-digit TOTP codes that refresh every 30 seconds.
 - Export and restore portable encrypted backups without exposing decrypted vault contents to the frontend.
 - Change the master password by verifying the current password and re-encrypting the vault with a fresh random salt.
@@ -59,13 +60,13 @@ The Rust entrypoint in `src-tauri/src/lib.rs` only assembles Tauri state and com
 
 ## Vault storage
 
-The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entry fields are authenticated ciphertext. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
+The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entries and vault preferences are authenticated ciphertext. The password-age limit travels with the encrypted vault and its backups, while auto-lock remains a device-specific setting in local application storage. Older vaults whose encrypted payload contains only an entry array load with the default 90-day password-age limit and migrate to the structured payload on their next save. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
 
 ## Backups and master-password changes
 
 Open **Vault settings** from the sidebar to export a `.passman` backup to the operating system's Downloads folder, restore an exported backup, or change the master password.
 
-- An exported backup is a newly encrypted snapshot containing the vault salt, a fresh nonce, and authenticated ciphertext. Decrypted entries and keys are never sent to the frontend or written to the backup.
+- An exported backup is a newly encrypted snapshot containing the vault salt, a fresh nonce, and authenticated ciphertext for entries and vault preferences. Decrypted entries and keys are never sent to the frontend or written to the backup.
 - A backup remains protected by the master password that was active when it was exported. Changing the current vault's master password does not change existing backup passwords.
 - Restoring requires the backup's master password. The frontend reads only the encrypted backup envelope; Passman decrypts and validates it in Rust before replacing the active vault, then writes the restored data with a fresh nonce.
 - Changing the master password verifies the current password, generates a fresh random salt, derives a new key, and re-encrypts the vault. The previous master password no longer unlocks the active vault.

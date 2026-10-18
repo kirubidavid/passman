@@ -21,8 +21,9 @@ import {
   dashboardShell,
   getPasswordAgeStatus,
   renderEntries,
+  setFilter,
 } from "../../src/rendering";
-import { state } from "../../src/state";
+import { getPasswordAgeLimitDays, state } from "../../src/state";
 
 describe("vault rendering", () => {
   const callbacks = {
@@ -45,7 +46,9 @@ describe("vault rendering", () => {
         favorite: true,
         hasTotp: false,
         updatedAt: 2,
-        passwordChangedAt: 2,
+        passwordChangedAt: Date.now(),
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
       },
       {
         id: "bank",
@@ -55,7 +58,9 @@ describe("vault rendering", () => {
         favorite: false,
         hasTotp: false,
         updatedAt: 1,
-        passwordChangedAt: 1,
+        passwordChangedAt: Date.now(),
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
       },
     ];
     state.activeFilter = "All items";
@@ -108,6 +113,89 @@ describe("vault rendering", () => {
     );
   });
 
+  it("counts health issues and sorts the health filter by urgency", () => {
+    const now = Date.now();
+    const base = {
+      username: "",
+      website: "",
+      favorite: false,
+      hasTotp: false,
+      updatedAt: now,
+    };
+    state.entries = [
+      {
+        ...base,
+        id: "due",
+        title: "Due soon",
+        passwordChangedAt: now - 60 * 86_400_000,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
+      },
+      {
+        ...base,
+        id: "weak",
+        title: "Weak password",
+        passwordChangedAt: now,
+        passwordStrengthScore: 2,
+        duplicatePassword: false,
+      },
+      {
+        ...base,
+        id: "duplicate-one",
+        title: "Duplicate one",
+        passwordChangedAt: now,
+        passwordStrengthScore: 4,
+        duplicatePassword: true,
+      },
+      {
+        ...base,
+        id: "expired",
+        title: "Expired password",
+        passwordChangedAt: now - 91 * 86_400_000,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
+      },
+      {
+        ...base,
+        id: "duplicate-two",
+        title: "Duplicate two",
+        passwordChangedAt: now,
+        passwordStrengthScore: 4,
+        duplicatePassword: true,
+      },
+      {
+        ...base,
+        id: "healthy",
+        title: "Healthy password",
+        passwordChangedAt: now,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
+      },
+    ];
+    dashboardShell();
+    setFilter("Password health");
+
+    expect(document.querySelector("#health-expired-count")?.textContent).toBe(
+      "1",
+    );
+    expect(document.querySelector("#health-due-count")?.textContent).toBe("1");
+    expect(document.querySelector("#health-duplicate-count")?.textContent).toBe(
+      "2",
+    );
+    expect(document.querySelector("#health-weak-count")?.textContent).toBe("1");
+    const titles = [
+      ...document.querySelectorAll<HTMLElement>(".entry-title-row h3"),
+    ].map((element) => element.textContent);
+    expect(titles[0]).toBe("Expired password");
+    expect(titles).not.toContain("Healthy password");
+    expect(document.querySelector("#entries-area")?.textContent).toContain(
+      "Duplicate",
+    );
+    expect(document.querySelector("#entries-area")?.textContent).toContain(
+      "Weak (2/4)",
+    );
+  });
+
   it("surfaces unlock errors and re-enables the submit button", async () => {
     vaultApi.unlock.mockRejectedValue(
       new Error("Master password is incorrect"),
@@ -132,6 +220,26 @@ describe("vault rendering", () => {
 
     expect(submit.disabled).toBe(false);
     expect(callbacks.loadDashboard).not.toHaveBeenCalled();
+  });
+
+  it("applies encrypted preferences returned during unlock", async () => {
+    vaultApi.unlock.mockResolvedValue({ passwordAgeLimitDays: 180 });
+    callbacks.loadDashboard.mockResolvedValue();
+    authView(true);
+    const form = document.querySelector<HTMLFormElement>("#auth-form");
+    const password =
+      document.querySelector<HTMLInputElement>("#master-password");
+    if (!form || !password) throw new Error("Unlock form was not rendered");
+    password.value = "correct password";
+
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() =>
+      expect(callbacks.loadDashboard).toHaveBeenCalledOnce(),
+    );
+    expect(getPasswordAgeLimitDays()).toBe(180);
   });
 
   it("requires the reset-vault phrase dialog before resetting", async () => {

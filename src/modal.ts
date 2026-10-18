@@ -4,6 +4,7 @@ import {
   AUTO_LOCK_OPTIONS,
   MAX_PASSWORD_AGE_LIMIT_DAYS,
   MIN_PASSWORD_AGE_LIMIT_DAYS,
+  applyVaultSnapshot,
   getAutoLockMinutes,
   getPasswordAgeLimitDays,
   setAutoLockMinutes,
@@ -212,15 +213,21 @@ export function openVaultSettings() {
       fail(error);
     }
   });
-  $("#password-age-limit").addEventListener("change", (event) => {
+  $("#password-age-limit").addEventListener("change", async (event) => {
     const input = event.currentTarget as HTMLInputElement;
+    const previous = getPasswordAgeLimitDays();
     try {
       const days = Number(input.value);
-      setPasswordAgeLimitDays(days);
+      const preferences = await vaultApi.setPreferences({
+        passwordAgeLimitDays: days,
+      });
+      setPasswordAgeLimitDays(preferences.passwordAgeLimitDays);
       callbacks.renderEntries();
-      toast(`Password age limit set to ${days} days.`);
+      toast(
+        `Password age limit set to ${preferences.passwordAgeLimitDays} days.`,
+      );
     } catch (error) {
-      input.value = String(getPasswordAgeLimitDays());
+      input.value = String(previous);
       fail(error);
     }
   });
@@ -268,9 +275,11 @@ function openRestoreModal() {
       if (file.size > 64 * 1024 * 1024) {
         throw new Error("Backup file is larger than the supported limit.");
       }
-      state.entries = await vaultApi.importBackup(
-        await file.text(),
-        String(data.get("password") ?? ""),
+      applyVaultSnapshot(
+        await vaultApi.importBackup(
+          await file.text(),
+          String(data.get("password") ?? ""),
+        ),
       );
       state.searchTerm = "";
       state.activeFilter = "All items";

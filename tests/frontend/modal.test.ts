@@ -2,13 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const vaultApi = vi.hoisted(() => ({
   getTotpCode: vi.fn(),
+  setPreferences: vi.fn(),
 }));
 vi.mock("../../src/vault-api", () => ({ vaultApi }));
 vi.mock("../../src/clipboard", () => ({ copyText: vi.fn() }));
 vi.mock("../../src/generator", () => ({ generatePassword: vi.fn() }));
 
-import { closeModal, confirmAction, showTotp } from "../../src/modal";
-import { state } from "../../src/state";
+import {
+  closeModal,
+  configureModal,
+  confirmAction,
+  openVaultSettings,
+  showTotp,
+} from "../../src/modal";
+import { getPasswordAgeLimitDays, state } from "../../src/state";
 
 describe("modal cleanup", () => {
   beforeEach(() => {
@@ -25,11 +32,18 @@ describe("modal cleanup", () => {
         hasTotp: true,
         updatedAt: 1,
         passwordChangedAt: 1,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
       },
     ];
     vaultApi.getTotpCode.mockResolvedValue({
       code: "123456",
       secondsRemaining: 20,
+    });
+    configureModal({
+      setFilter: vi.fn(),
+      renderEntries: vi.fn(),
+      recordActivity: vi.fn(),
     });
   });
 
@@ -109,5 +123,26 @@ describe("modal cleanup", () => {
 
     await expect(confirmed).resolves.toBe(false);
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+
+  it("persists password age preferences through the vault API", async () => {
+    vaultApi.setPreferences.mockResolvedValue({
+      passwordAgeLimitDays: 120,
+    });
+    openVaultSettings();
+    const input = document.querySelector<HTMLInputElement>(
+      "#password-age-limit",
+    );
+    if (!input) throw new Error("Password age preference was not rendered");
+
+    input.value = "120";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() =>
+      expect(vaultApi.setPreferences).toHaveBeenCalledWith({
+        passwordAgeLimitDays: 120,
+      }),
+    );
+    expect(getPasswordAgeLimitDays()).toBe(120);
   });
 });

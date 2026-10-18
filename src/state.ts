@@ -7,6 +7,8 @@ export interface EntrySummary {
   hasTotp: boolean;
   updatedAt: number;
   passwordChangedAt: number;
+  passwordStrengthScore: number;
+  duplicatePassword: boolean;
 }
 
 export interface EntryDetails extends EntrySummary {
@@ -33,6 +35,15 @@ export interface Status {
   entryCount: number;
 }
 
+export interface VaultPreferences {
+  passwordAgeLimitDays: number;
+}
+
+export interface VaultSnapshot {
+  entries: EntrySummary[];
+  preferences: VaultPreferences;
+}
+
 export interface GeneratorOptions {
   length: number;
   uppercase: boolean;
@@ -49,7 +60,6 @@ export interface TotpResult {
 export const AUTO_LOCK_OPTIONS = [1, 5, 15, 30, 60] as const;
 const AUTO_LOCK_STORAGE_KEY = "passman.autoLockMinutes";
 const DEFAULT_AUTO_LOCK_MINUTES = 5;
-const PASSWORD_AGE_STORAGE_KEY = "passman.passwordAgeLimitDays";
 export const DEFAULT_PASSWORD_AGE_LIMIT_DAYS = 90;
 export const MIN_PASSWORD_AGE_LIMIT_DAYS = 30;
 export const MAX_PASSWORD_AGE_LIMIT_DAYS = 3_650;
@@ -60,6 +70,9 @@ export const state = {
   searchTerm: "",
   generatedPassword: "",
   passwordVisible: false,
+  preferences: {
+    passwordAgeLimitDays: DEFAULT_PASSWORD_AGE_LIMIT_DAYS,
+  } as VaultPreferences,
 };
 
 export function clearUnlockedState() {
@@ -67,6 +80,9 @@ export function clearUnlockedState() {
   state.generatedPassword = "";
   state.searchTerm = "";
   state.passwordVisible = false;
+  state.preferences = {
+    passwordAgeLimitDays: DEFAULT_PASSWORD_AGE_LIMIT_DAYS,
+  };
 }
 
 export function getAutoLockMinutes() {
@@ -83,12 +99,7 @@ export function setAutoLockMinutes(minutes: number) {
 }
 
 export function getPasswordAgeLimitDays() {
-  const stored = Number(localStorage.getItem(PASSWORD_AGE_STORAGE_KEY));
-  return Number.isInteger(stored) &&
-    stored >= MIN_PASSWORD_AGE_LIMIT_DAYS &&
-    stored <= MAX_PASSWORD_AGE_LIMIT_DAYS
-    ? stored
-    : DEFAULT_PASSWORD_AGE_LIMIT_DAYS;
+  return state.preferences.passwordAgeLimitDays;
 }
 
 export function setPasswordAgeLimitDays(days: number) {
@@ -101,7 +112,12 @@ export function setPasswordAgeLimitDays(days: number) {
       `Password age must be between ${MIN_PASSWORD_AGE_LIMIT_DAYS} and ${MAX_PASSWORD_AGE_LIMIT_DAYS} days.`,
     );
   }
-  localStorage.setItem(PASSWORD_AGE_STORAGE_KEY, String(days));
+  state.preferences = { passwordAgeLimitDays: days };
+}
+
+export function applyVaultSnapshot(snapshot: VaultSnapshot) {
+  state.entries = snapshot.entries;
+  state.preferences = snapshot.preferences;
 }
 
 export function createAutoLock(onDeadline: () => void) {

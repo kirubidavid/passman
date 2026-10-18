@@ -1,7 +1,7 @@
 use crate::{
     models::{
         CURRENT_KDF, Entry, KEY_LEN, KdfAlgorithm, KdfParameters, MAX_ENTRIES, NONCE_LEN,
-        SALT_LEN,
+        SALT_LEN, VaultData, VaultPreferences, evaluate_password_strength,
     },
     totp::decode_totp_secret,
 };
@@ -69,6 +69,34 @@ pub(crate) fn derive_key_with_kdf(
 pub(crate) fn seal(
     key: &[u8; KEY_LEN],
     entries: &[Entry],
+    preferences: &VaultPreferences,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let mut nonce = vec![0_u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce);
+    let cipher = XChaCha20Poly1305::new(key.into());
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct VaultDataRef<'a> {
+        entries: &'a [Entry],
+        preferences: &'a VaultPreferences,
+    }
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(&VaultDataRef {
+            entries,
+            preferences,
+        })
+        .map_err(|e| format!("Could not encode vault: {e}"))?,
+    );
+    let ciphertext = cipher
+        .encrypt(XNonce::from_slice(&nonce), plaintext.as_slice())
+        .map_err(|_| "Could not encrypt vault".to_string())?;
+    Ok((nonce, ciphertext))
+}
+
+#[cfg(test)]
+pub(crate) fn seal_legacy_entries(
+    key: &[u8; KEY_LEN],
+    entries: &[Entry],
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut nonce = vec![0_u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
@@ -86,19 +114,25 @@ pub(crate) fn open(
     key: &[u8; KEY_LEN],
     nonce: &[u8],
     ciphertext: &[u8],
-) -> Result<Vec<Entry>, String> {
+) -> Result<VaultData, String> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(XNonce::from_slice(nonce), ciphertext)
             .map_err(|_| "Incorrect master password or damaged vault".to_string())?,
     );
-    let entries: Vec<Entry> = serde_json::from_slice(plaintext.as_slice())
-        .map_err(|_| "Vault data is invalid".to_string())?;
-    if entries.len() > MAX_ENTRIES {
+    let mut data = serde_json::from_slice::<VaultData>(plaintext.as_slice()).or_else(|_| {
+        serde_json::from_slice::<Vec<Entry>>(plaintext.as_slice()).map(|entries| VaultData {
+            entries,
+            preferences: VaultPreferences::default(),
+        })
+    })
+    .map_err(|_| "Vault data is invalid".to_string())?;
+    let preferences = data.preferences.validate()?;
+    if data.entries.len() > MAX_ENTRIES {
         return Err("Vault contains too many entries".into());
     }
-    if entries.iter().any(|entry| {
+    if data.entries.iter().any(|entry| {
         entry.title.is_empty()
             || entry.title.chars().count() > 200
             || entry.username.chars().count() > 500
@@ -117,5 +151,13 @@ pub(crate) fn open(
     }) {
         return Err("Vault contains invalid entry data".into());
     }
-    Ok(entries)
+    for entry in &mut data.entries {
+        if entry.password_strength_score > 4 {
+            entry.password_strength_score = evaluate_password_strength(entry)?;
+        }
+    }
+    Ok(VaultData {
+        entries: data.entries,
+        preferences,
+    })
 }

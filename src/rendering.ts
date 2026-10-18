@@ -6,7 +6,12 @@ import {
   openVaultSettings,
   showTotp,
 } from "./modal";
-import { getPasswordAgeLimitDays, state } from "./state";
+import {
+  getPasswordAgeLimitDays,
+  setPasswordAgeLimitDays,
+  state,
+  type VaultPreferences,
+} from "./state";
 import { $, escapeHtml, fail, icon, toast } from "./ui";
 import { vaultApi } from "./vault-api";
 
@@ -77,6 +82,48 @@ export function getPasswordAgeStatus(
   };
 }
 
+export function getEntryHealth(
+  entry: (typeof state.entries)[number],
+  limitDays = getPasswordAgeLimitDays(),
+  now = Date.now(),
+) {
+  const age = getPasswordAgeStatus(
+    entry.passwordChangedAt || entry.updatedAt,
+    limitDays,
+    now,
+  );
+  const weak = entry.passwordStrengthScore <= 2;
+  const duplicate = entry.duplicatePassword;
+  return {
+    age,
+    weak,
+    duplicate,
+    hasIssue: age.level !== "green" || weak || duplicate,
+    urgency:
+      (age.level === "red" ? 100 : age.level === "yellow" ? 10 : 0) +
+      (duplicate ? 40 : 0) +
+      (weak ? 20 : 0),
+  };
+}
+
+export function getPasswordHealthCounts(
+  entries = state.entries,
+  limitDays = getPasswordAgeLimitDays(),
+  now = Date.now(),
+) {
+  return entries.reduce(
+    (counts, entry) => {
+      const health = getEntryHealth(entry, limitDays, now);
+      if (health.age.level === "red") counts.expired += 1;
+      else if (health.age.level === "yellow") counts.dueSoon += 1;
+      if (health.duplicate) counts.duplicate += 1;
+      if (health.weak) counts.weak += 1;
+      return counts;
+    },
+    { expired: 0, dueSoon: 0, duplicate: 0, weak: 0 },
+  );
+}
+
 export function authView(exists: boolean, message = "") {
   $("#app").innerHTML = `
     <main class="auth-shell">
@@ -106,13 +153,15 @@ export function authView(exists: boolean, message = "") {
     const submit = $<HTMLButtonElement>(".auth-submit");
     submit.disabled = true;
     try {
-      if (exists) await vaultApi.unlock(password);
+      let preferences: VaultPreferences;
+      if (exists) preferences = await vaultApi.unlock(password);
       else {
         if (password !== $<HTMLInputElement>("#confirm-password").value) {
           throw new Error("Master passwords do not match.");
         }
-        await vaultApi.create(password);
+        preferences = await vaultApi.create(password);
       }
+      setPasswordAgeLimitDays(preferences.passwordAgeLimitDays);
       await callbacks.loadDashboard();
     } catch (error) {
       errorElement.textContent = String(error).replace(/^Error: /, "");
@@ -146,6 +195,7 @@ export function dashboardShell() {
         <nav class="main-nav" aria-label="Main navigation">
           <button class="nav-item active" data-filter="All items">${icon("dots", 18)}<span>All items</span><span class="nav-count" id="total-count">0</span></button>
           <button class="nav-item" data-filter="Favorites">${icon("spark", 17)}<span>Favorites</span></button>
+          <button class="nav-item" data-filter="Password health">${icon("shield", 17)}<span>Password health</span><span class="nav-count" id="health-nav-count">0</span></button>
         </nav>
         <div class="sidebar-rule"></div>
         <div class="sidebar-hint"><div class="hint-icon">${icon("shield", 17)}</div><strong>Private by design</strong><p>Your vault is encrypted on this device. Only you hold the key.</p></div>
@@ -160,7 +210,7 @@ export function dashboardShell() {
             <div class="generated-row"><code id="generated-output" class="generated-output" aria-live="polite">Generate a strong password</code><div class="generated-actions"><button class="icon-button" id="refresh-password" aria-label="Generate password" title="Generate password">${icon("refresh", 17)}</button><button class="icon-button" id="copy-generated" aria-label="Copy password" title="Copy password">${icon("copy", 17)}</button></div></div>
             <div class="generator-controls"><div class="length-control"><label for="password-length">LENGTH <strong id="length-value">20</strong></label><input id="password-length" type="range" min="8" max="64" value="20" /></div><div class="checks" role="group" aria-label="Character types"><label class="check-label"><input type="checkbox" id="opt-uppercase" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Uppercase <span aria-hidden="true">ABC</span></span></label><label class="check-label"><input type="checkbox" id="opt-lowercase" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Lowercase <span aria-hidden="true">abc</span></span></label><label class="check-label"><input type="checkbox" id="opt-numbers" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Numbers <span aria-hidden="true">123</span></span></label><label class="check-label"><input type="checkbox" id="opt-symbols" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Symbols <span aria-hidden="true">#$&</span></span></label></div><button class="button generate-button" id="generate-button">${icon("spark", 15)} Generate</button></div>
           </section>
-          <section class="vault-section"><div class="vault-section-head"><div><h2>Your passwords <span class="section-count" id="section-count">0</span></h2><p>Only you can see what’s inside.</p></div><div class="search-wrap">${icon("search", 16)}<input type="search" id="search-input" placeholder="Search passwords..." autocomplete="off" /><kbd>⌘ K</kbd></div></div><div id="entries-area"></div></section>
+          <section class="vault-section"><div class="vault-section-head"><div><h2>Your passwords <span class="section-count" id="section-count">0</span></h2><p>Only you can see what’s inside.</p></div><div class="search-wrap">${icon("search", 16)}<input type="search" id="search-input" placeholder="Search passwords..." autocomplete="off" /><kbd>⌘ K</kbd></div></div><div class="password-health-summary" aria-label="Password health summary"><span class="health-summary-item health-summary-red"><strong id="health-expired-count">0</strong> Expired</span><span class="health-summary-item health-summary-yellow"><strong id="health-due-count">0</strong> Due soon</span><span class="health-summary-item health-summary-orange"><strong id="health-duplicate-count">0</strong> Duplicate</span><span class="health-summary-item health-summary-purple"><strong id="health-weak-count">0</strong> Weak</span></div><div id="entries-area"></div></section>
         </div>
         <footer class="main-footer"><span>${icon("lock", 13)} Your data stays yours. Always.</span><span>Encrypted locally on this device</span></footer>
       </main>
@@ -204,7 +254,12 @@ export function setFilter(filter: string) {
     .forEach((button) => {
       button.classList.toggle("active", button.dataset.filter === filter);
     });
-  const title = filter === "Favorites" ? "Favorites" : "All items";
+  const title =
+    filter === "Favorites"
+      ? "Favorites"
+      : filter === "Password health"
+        ? "Password health"
+        : "All items";
   $("#breadcrumb-current").textContent = title;
   const titleText = $("#page-title").firstChild;
   if (!titleText) throw new Error("Missing page title text");
@@ -213,12 +268,23 @@ export function setFilter(filter: string) {
 }
 
 export function renderEntries() {
+  const healthCounts = getPasswordHealthCounts();
+  $("#health-expired-count").textContent = String(healthCounts.expired);
+  $("#health-due-count").textContent = String(healthCounts.dueSoon);
+  $("#health-duplicate-count").textContent = String(healthCounts.duplicate);
+  $("#health-weak-count").textContent = String(healthCounts.weak);
+  $("#health-nav-count").textContent = String(
+    state.entries.filter((entry) => getEntryHealth(entry).hasIssue).length,
+  );
   const filtered = state.entries.filter((entry) => {
     const matchesSearch = `${entry.title} ${entry.username} ${entry.website}`
       .toLowerCase()
       .includes(state.searchTerm);
     return (
-      matchesSearch && (state.activeFilter !== "Favorites" || entry.favorite)
+      matchesSearch &&
+      (state.activeFilter !== "Favorites" || entry.favorite) &&
+      (state.activeFilter !== "Password health" ||
+        getEntryHealth(entry).hasIssue)
     );
   });
   $("#total-count").textContent = String(state.entries.length);
@@ -227,7 +293,7 @@ export function renderEntries() {
   const area = $("#entries-area");
   if (filtered.length === 0) {
     const searching = state.searchTerm.length > 0;
-    area.innerHTML = `<div class="empty-state"><div class="empty-illustration">${icon(searching ? "search" : "key", 26)}</div><h3>${searching ? "No matching passwords" : state.activeFilter === "Favorites" ? "No favorites yet" : "Your vault is ready."}</h3><p>${searching ? "Try searching with a different name or username." : state.activeFilter === "Favorites" ? "Mark an item as a favorite to see it here." : "Save a login or generate a new password to get started."}</p>${!searching && state.activeFilter === "All items" ? `<button class="button button-primary" id="empty-add">${icon("plus", 15)} Add your first item</button>` : ""}</div>`;
+    area.innerHTML = `<div class="empty-state"><div class="empty-illustration">${icon(searching ? "search" : state.activeFilter === "Password health" ? "shield" : "key", 26)}</div><h3>${searching ? "No matching passwords" : state.activeFilter === "Favorites" ? "No favorites yet" : state.activeFilter === "Password health" ? "No password health issues" : "Your vault is ready."}</h3><p>${searching ? "Try searching with a different name or username." : state.activeFilter === "Favorites" ? "Mark an item as a favorite to see it here." : state.activeFilter === "Password health" ? "No expired, due-soon, duplicate, or weak passwords were found." : "Save a login or generate a new password to get started."}</p>${!searching && state.activeFilter === "All items" ? `<button class="button button-primary" id="empty-add">${icon("plus", 15)} Add your first item</button>` : ""}</div>`;
     area
       .querySelector<HTMLButtonElement>("#empty-add")
       ?.addEventListener("click", () => {
@@ -236,13 +302,16 @@ export function renderEntries() {
     return;
   }
   area.innerHTML = `<div class="entry-list">${filtered
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort((a, b) =>
+      state.activeFilter === "Password health"
+        ? getEntryHealth(b).urgency - getEntryHealth(a).urgency ||
+          b.updatedAt - a.updatedAt
+        : b.updatedAt - a.updatedAt,
+    )
     .map((entry) => {
       const id = escapeHtml(entry.id);
-      const age = getPasswordAgeStatus(
-        entry.passwordChangedAt || entry.updatedAt,
-      );
-      return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password"><span class="password-age password-age-${age.level}" title="${escapeHtml(age.description)}" aria-label="${escapeHtml(age.description)}"><span class="password-age-dot" aria-hidden="true"></span>${age.label}</span><span>${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</span></div></article>`;
+      const health = getEntryHealth(entry);
+      return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password"><span class="password-age password-age-${health.age.level}" title="${escapeHtml(health.age.description)}" aria-label="${escapeHtml(health.age.description)}"><span class="password-age-dot" aria-hidden="true"></span>${health.age.label}</span>${health.duplicate ? '<span class="health-label health-label-duplicate">Duplicate</span>' : ""}${health.weak ? `<span class="health-label health-label-weak">Weak (${entry.passwordStrengthScore}/4)</span>` : ""}<span>${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</span></div></article>`;
     })
     .join("")}</div>`;
   area.querySelectorAll<HTMLButtonElement>(".entry-copy").forEach((button) => {

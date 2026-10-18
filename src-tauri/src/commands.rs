@@ -2,6 +2,8 @@ use crate::{
     crypto::{derive_key, fresh_salt},
     models::{
         AppState, CURRENT_KDF, Entry, EntryDetails, EntrySummary, MAX_ENTRIES, UnlockedVault,
+        VaultPreferences, VaultSnapshot, entry_details, evaluate_password_strength,
+        summarize_entries,
     },
     persistence::{
         load_vault, load_vault_data, persist, vault_path, write_vault, write_vault_with_kdf,
@@ -12,7 +14,7 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{
-    crypto::{derive_key_with_kdf, open, seal},
+    crypto::{derive_key_with_kdf, open, seal, seal_legacy_entries},
     models::{KEY_LEN, KdfAlgorithm, KdfParameters, VAULT_FILE, VaultFile},
     persistence::{atomic_write, atomic_write_with},
 };
@@ -90,7 +92,7 @@ pub(crate) fn create_vault(
     password: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<VaultPreferences, String> {
     let password = Zeroizing::new(password);
     if password.chars().count() < 12 {
         return Err("Choose a master password with at least 12 characters".into());
@@ -102,6 +104,7 @@ pub(crate) fn create_vault(
     let salt = fresh_salt();
     let key = derive_key(password.as_str(), &salt)?;
     let entries = Vec::new();
+    let preferences = VaultPreferences::default();
     write_vault(&path, &salt, &key, &entries)?;
     let mut guard = state
         .vault
@@ -112,8 +115,9 @@ pub(crate) fn create_vault(
         salt,
         kdf: CURRENT_KDF,
         entries,
+        preferences,
     });
-    Ok(())
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -121,10 +125,11 @@ pub(crate) fn unlock_vault(
     password: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<VaultPreferences, String> {
     let password = Zeroizing::new(password);
     let path = vault_path(&app)?;
-    let (key, salt, kdf, entries) = load_vault(&path, password.as_str())?;
+    let (key, salt, kdf, data) = load_vault(&path, password.as_str())?;
+    let preferences = data.preferences;
     let mut guard = state
         .vault
         .lock()
@@ -133,9 +138,10 @@ pub(crate) fn unlock_vault(
         key,
         salt,
         kdf,
-        entries,
+        entries: data.entries,
+        preferences,
     });
-    Ok(())
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -175,6 +181,7 @@ pub(crate) fn export_backup(
             &vault.key,
             &vault.kdf,
             &vault.entries,
+            &vault.preferences,
         )
             .map_err(|error| format!("Could not export backup: {error}"))?;
         Ok(filename)
@@ -187,7 +194,7 @@ pub(crate) fn import_backup(
     password: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<EntrySummary>, String> {
+) -> Result<VaultSnapshot, String> {
     let active_path = vault_path(&app)?;
     let backup = Zeroizing::new(backup);
     let password = Zeroizing::new(password);
@@ -198,18 +205,26 @@ pub(crate) fn import_backup(
     if guard.is_none() {
         return Err("Unlock your vault before restoring a backup".into());
     }
-    let (key, salt, kdf, entries) = load_vault_data(backup.as_bytes(), password.as_str())
+    let (key, salt, kdf, data) = load_vault_data(backup.as_bytes(), password.as_str())
         .map_err(|error| format!("Could not restore backup: {error}"))?;
-    write_vault_with_kdf(&active_path, &salt, &key, &kdf, &entries)
+    write_vault_with_kdf(
+        &active_path,
+        &salt,
+        &key,
+        &kdf,
+        &data.entries,
+        &data.preferences,
+    )
         .map_err(|error| format!("Could not restore backup: {error}"))?;
-    let summaries = entries.iter().map(EntrySummary::from).collect();
+    let snapshot = VaultSnapshot::from_data(&data);
     *guard = Some(UnlockedVault {
         key,
         salt,
         kdf,
-        entries,
+        entries: data.entries,
+        preferences: data.preferences,
     });
-    Ok(summaries)
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -235,16 +250,24 @@ pub(crate) fn change_master_password(
     if guard.is_none() {
         return Err("Unlock your vault before changing its master password".into());
     }
-    let (_, _, _, entries) = load_vault(&path, current_password.as_str())
+    let (_, _, _, data) = load_vault(&path, current_password.as_str())
         .map_err(|_| "Current master password is incorrect".to_string())?;
     let salt = fresh_salt();
     let key = derive_key(new_password.as_str(), &salt)?;
-    write_vault(&path, &salt, &key, &entries)?;
+    write_vault_with_kdf(
+        &path,
+        &salt,
+        &key,
+        &CURRENT_KDF,
+        &data.entries,
+        &data.preferences,
+    )?;
     *guard = Some(UnlockedVault {
         key,
         salt,
         kdf: CURRENT_KDF,
-        entries,
+        entries: data.entries,
+        preferences: data.preferences,
     });
     Ok(())
 }
@@ -269,9 +292,26 @@ pub(crate) fn reset_vault(
 #[tauri::command]
 pub(crate) fn list_entries(
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<EntrySummary>, String> {
+) -> Result<VaultSnapshot, String> {
+    with_vault(&state, |vault| Ok(VaultSnapshot::from_vault(vault)))
+}
+
+#[tauri::command]
+pub(crate) fn set_vault_preferences(
+    preferences: VaultPreferences,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<VaultPreferences, String> {
+    let preferences = preferences.validate()?;
+    let path = vault_path(&app)?;
     with_vault(&state, |vault| {
-        Ok(vault.entries.iter().map(EntrySummary::from).collect())
+        let previous = vault.preferences;
+        vault.preferences = preferences;
+        if let Err(error) = persist(&path, vault) {
+            vault.preferences = previous;
+            return Err(error);
+        }
+        Ok(vault.preferences)
     })
 }
 
@@ -281,12 +321,12 @@ pub(crate) fn get_entry(
     state: tauri::State<'_, AppState>,
 ) -> Result<EntryDetails, String> {
     with_vault(&state, |vault| {
-        vault
+        let entry = vault
             .entries
             .iter()
             .find(|entry| entry.id == id)
-            .map(EntryDetails::from)
-            .ok_or_else(|| "Password entry not found".to_string())
+            .ok_or_else(|| "Password entry not found".to_string())?;
+        Ok(entry_details(&vault.entries, entry))
     })
 }
 
@@ -377,7 +417,7 @@ pub(crate) fn set_totp_secret(
         if let Some(mut previous) = previous {
             previous.zeroize();
         }
-        Ok(vault.entries.iter().map(EntrySummary::from).collect())
+        Ok(summarize_entries(&vault.entries))
     })
 }
 
@@ -402,7 +442,7 @@ pub(crate) fn remove_totp_secret(
         if let Some(mut previous) = previous {
             previous.zeroize();
         }
-        Ok(vault.entries.iter().map(EntrySummary::from).collect())
+        Ok(summarize_entries(&vault.entries))
     })
 }
 
@@ -433,6 +473,7 @@ pub(crate) fn save_entry(
     {
         return Err("Authenticator secret is invalid".into());
     }
+    entry.password_strength_score = evaluate_password_strength(&entry)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "System clock is before the Unix epoch".to_string())?
@@ -466,7 +507,7 @@ pub(crate) fn save_entry(
         for mut previous in original_entries {
             previous.zeroize();
         }
-        Ok(vault.entries.iter().map(EntrySummary::from).collect())
+        Ok(summarize_entries(&vault.entries))
     })
 }
 
@@ -487,7 +528,7 @@ pub(crate) fn delete_entry(
         for mut previous in original_entries {
             previous.zeroize();
         }
-        Ok(vault.entries.iter().map(EntrySummary::from).collect())
+        Ok(summarize_entries(&vault.entries))
     })
 }
 
@@ -586,6 +627,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_strength_score: u8::MAX,
         }
     }
 
@@ -664,11 +706,13 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_strength_score: u8::MAX,
         }];
         let key = [7_u8; KEY_LEN];
-        let (nonce, ciphertext) = seal(&key, &entries).unwrap();
+        let preferences = VaultPreferences::default();
+        let (nonce, ciphertext) = seal(&key, &entries, &preferences).unwrap();
         assert_eq!(
-            open(&key, &nonce, &ciphertext).unwrap()[0].password,
+            open(&key, &nonce, &ciphertext).unwrap().entries[0].password,
             "secret"
         );
         assert!(open(&[8_u8; KEY_LEN], &nonce, &ciphertext).is_err());
@@ -717,6 +761,33 @@ mod tests {
     }
 
     #[test]
+    fn vault_preferences_enforce_password_age_bounds() {
+        assert!(
+            VaultPreferences {
+                password_age_limit_days: 29,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            VaultPreferences {
+                password_age_limit_days: 3_651,
+            }
+            .validate()
+            .is_err()
+        );
+        assert_eq!(
+            VaultPreferences {
+                password_age_limit_days: 180,
+            }
+            .validate()
+            .unwrap()
+            .password_age_limit_days,
+            180
+        );
+    }
+
+    #[test]
     fn exported_vault_round_trips_with_its_master_password() {
         let path = std::env::temp_dir().join(format!(
             "passman-backup-test-{}.passman",
@@ -735,15 +806,17 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_strength_score: u8::MAX,
         }];
 
         write_vault(&path, &salt, &key, &entries).unwrap();
-        let (_, loaded_salt, loaded_kdf, loaded_entries) =
+        let (_, loaded_salt, loaded_kdf, loaded_data) =
             load_vault(&path, "a secure test password").unwrap();
 
         assert_eq!(loaded_salt, salt);
         assert_eq!(loaded_kdf, CURRENT_KDF);
-        assert_eq!(loaded_entries[0].password, "secret");
+        assert_eq!(loaded_data.entries[0].password, "secret");
+        assert_eq!(loaded_data.preferences, VaultPreferences::default());
         fs::remove_file(path).unwrap();
     }
 
@@ -752,7 +825,7 @@ mod tests {
         let salt = fresh_salt();
         let key = derive_key("legacy vault password", &salt).unwrap();
         let entries = vec![persistence_test_entry("legacy secret")];
-        let (nonce, ciphertext) = seal(&key, &entries).unwrap();
+        let (nonce, ciphertext) = seal_legacy_entries(&key, &entries).unwrap();
         let legacy_file = VaultFile {
             version: 1,
             kdf: None,
@@ -762,12 +835,13 @@ mod tests {
         };
         let data = serde_json::to_vec(&legacy_file).unwrap();
 
-        let (_, loaded_salt, loaded_kdf, loaded_entries) =
+        let (_, loaded_salt, loaded_kdf, loaded_data) =
             load_vault_data(&data, "legacy vault password").unwrap();
 
         assert_eq!(loaded_salt, salt);
         assert_eq!(loaded_kdf, CURRENT_KDF);
-        assert_eq!(loaded_entries[0].password, "legacy secret");
+        assert_eq!(loaded_data.entries[0].password, "legacy secret");
+        assert_eq!(loaded_data.preferences, VaultPreferences::default());
     }
 
     #[test]
@@ -796,16 +870,17 @@ mod tests {
             &alternate_key,
             &alternate_kdf,
             &entries,
+            &VaultPreferences::default(),
         )
         .unwrap();
 
         let current_file: VaultFile =
             serde_json::from_slice(&fs::read(&current_path).unwrap()).unwrap();
-        let (_, _, loaded_alternate_kdf, loaded_entries) =
+        let (_, _, loaded_alternate_kdf, loaded_data) =
             load_vault(&alternate_path, "alternate parameters password").unwrap();
         assert_eq!(current_file.kdf, Some(CURRENT_KDF));
         assert_eq!(loaded_alternate_kdf, alternate_kdf);
-        assert_eq!(loaded_entries[0].password, "parameterized secret");
+        assert_eq!(loaded_data.entries[0].password, "parameterized secret");
         remove_persistence_test_directory(&directory);
     }
 
@@ -814,7 +889,8 @@ mod tests {
         let salt = fresh_salt();
         let key = derive_key("metadata validation password", &salt).unwrap();
         let entries = vec![persistence_test_entry("secret")];
-        let (nonce, ciphertext) = seal(&key, &entries).unwrap();
+        let (nonce, ciphertext) =
+            seal(&key, &entries, &VaultPreferences::default()).unwrap();
         let mut file = VaultFile {
             version: 2,
             kdf: Some(CURRENT_KDF),
@@ -865,6 +941,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_strength_score: u8::MAX,
         }];
         write_vault(&path, &old_salt, &old_key, &entries).unwrap();
 
@@ -875,7 +952,7 @@ mod tests {
         assert_ne!(new_salt, old_salt);
         assert!(load_vault(&path, "old secure password").is_err());
         assert_eq!(
-            load_vault(&path, "new secure password").unwrap().3[0].password,
+            load_vault(&path, "new secure password").unwrap().3.entries[0].password,
             "secret"
         );
         let rekeyed_file: VaultFile =
@@ -907,8 +984,8 @@ mod tests {
         )
         .unwrap();
 
-        let (_, _, _, entries) = load_vault(&path, "persistence test password").unwrap();
-        assert_eq!(entries[0].password, "new secret");
+        let (_, _, _, data) = load_vault(&path, "persistence test password").unwrap();
+        assert_eq!(data.entries[0].password, "new secret");
         remove_persistence_test_directory(&directory);
     }
 
@@ -951,8 +1028,8 @@ mod tests {
         )
         .unwrap();
 
-        let (_, _, _, entries) = load_vault(&path, "interrupted test password").unwrap();
-        assert_eq!(entries[0].password, "active secret");
+        let (_, _, _, data) = load_vault(&path, "interrupted test password").unwrap();
+        assert_eq!(data.entries[0].password, "active secret");
         remove_persistence_test_directory(&directory);
     }
 

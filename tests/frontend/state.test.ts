@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyVaultSnapshot,
   clearUnlockedState,
   createAutoLock,
   getPasswordAgeLimitDays,
@@ -10,6 +11,7 @@ import {
 
 describe("vault locking state", () => {
   beforeEach(() => {
+    clearUnlockedState();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     setAutoLockMinutes(1);
@@ -53,6 +55,8 @@ describe("vault locking state", () => {
         hasTotp: false,
         updatedAt: 1,
         passwordChangedAt: 1,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
       },
     ];
     state.generatedPassword = "temporary-secret";
@@ -65,6 +69,7 @@ describe("vault locking state", () => {
     expect(state.generatedPassword).toBe("");
     expect(state.searchTerm).toBe("");
     expect(state.passwordVisible).toBe(false);
+    expect(getPasswordAgeLimitDays()).toBe(90);
   });
 
   it("defaults the password age limit to 90 days and validates changes", () => {
@@ -74,5 +79,14 @@ describe("vault locking state", () => {
     expect(() => setPasswordAgeLimitDays(29)).toThrow(
       "Password age must be between 30 and 3650 days.",
     );
+  });
+
+  it("applies preferences returned with an unlocked vault snapshot", () => {
+    applyVaultSnapshot({
+      entries: [],
+      preferences: { passwordAgeLimitDays: 180 },
+    });
+
+    expect(getPasswordAgeLimitDays()).toBe(180);
   });
 });
