@@ -219,8 +219,13 @@ async function resetVault() {
   } catch (error) { fail(error); }
 }
 
-function closeModal() {
+function stopTotpRefresh() {
   window.clearInterval(totpRefreshTimer);
+  totpRefreshTimer = 0;
+}
+
+function closeModal() {
+  stopTotpRefresh();
   document.querySelector<HTMLElement>("#modal-root")?.replaceChildren();
   passwordVisible = false;
 }
@@ -447,15 +452,28 @@ async function showTotp(id: string) {
       const code = $("#totp-code").textContent ?? "";
       void copyText(code);
     });
-    window.clearInterval(totpRefreshTimer);
+    stopTotpRefresh();
     totpRefreshTimer = window.setInterval(async () => {
-      if (!$("#totp-code", document).isConnected) { window.clearInterval(totpRefreshTimer); return; }
+      if (!document.querySelector("#totp-code")) {
+        stopTotpRefresh();
+        return;
+      }
       try {
         const next = await invoke<TotpResult>("get_totp_code", { id });
-        $("#totp-code").textContent = next.code;
-        $("#totp-remaining").textContent = `${next.secondsRemaining}s`;
-        $("#totp-progress").style.setProperty("--progress", `${(next.secondsRemaining / 30) * 100}%`);
-      } catch (error) { window.clearInterval(totpRefreshTimer); fail(error); }
+        const code = document.querySelector<HTMLElement>("#totp-code");
+        const remaining = document.querySelector<HTMLElement>("#totp-remaining");
+        const progress = document.querySelector<HTMLElement>("#totp-progress");
+        if (!code || !remaining || !progress) {
+          stopTotpRefresh();
+          return;
+        }
+        code.textContent = next.code;
+        remaining.textContent = `${next.secondsRemaining}s`;
+        progress.style.setProperty("--progress", `${(next.secondsRemaining / 30) * 100}%`);
+      } catch (error) {
+        stopTotpRefresh();
+        if (document.querySelector("#totp-code")) fail(error);
+      }
     }, 1000);
   } catch (error) { fail(error); }
 }
