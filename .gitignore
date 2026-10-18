@@ -12,6 +12,19 @@ dist
 dist-ssr
 *.local
 
+# Rust and Tauri build output
+/target/
+/src-tauri/target/
+/src-tauri/gen/schemas/
+/src-tauri/.tauri/
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

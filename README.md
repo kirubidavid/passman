@@ -32,6 +32,8 @@ The vault is kept in the operating system's per-user application data directory,
 
 ## Security notes and limitations
 
+See [SECURITY.md](SECURITY.md) for security best practices, backup guidance, and vulnerability reporting notes.
+
 - This is an MVP for one local vault. It has no sync, browser integration, or multi-user support.
 - The master password is not stored and cannot be recovered. If forgotten, use the in-app reset option to delete the vault and start over; existing entries cannot be recovered.
 - Use a strong, unique master password. A local attacker with a copy of the vault can attempt offline guesses; Argon2id makes guesses more expensive but does not make weak passwords safe.
