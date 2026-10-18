@@ -8,8 +8,10 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Generate 8–128 character passwords with selectable uppercase, lowercase, number, and symbol sets. Rust uses rejection-sampled operating-system cryptographic randomness.
 - Save, search, edit, favorite, copy, and delete login entries.
 - Store an optional authenticator setup key with an entry, then generate standards-based six-digit TOTP codes that refresh every 30 seconds.
+- Export and restore portable encrypted backups without exposing decrypted vault contents to the frontend.
+- Change the master password by verifying the current password and re-encrypting the vault with a fresh random salt.
 - Encrypt the vault with XChaCha20-Poly1305; derive a 256-bit key using Argon2id with a random salt.
-- Decrypted vault data and the key are held in application memory only while unlocked. Lock the vault or leave it idle for five minutes to clear that state.
+- Decrypted vault data and the key are held in application memory only while unlocked. The configurable auto-lock timeout defaults to five minutes and is checked again after window focus, visibility, suspend/resume, and supported workstation-lock transitions.
 - Copied passwords are cleared from the clipboard after 30 seconds when clipboard read-back is permitted.
 
 ## Requirements
@@ -26,16 +28,57 @@ Build a distributable app with `npm run tauri build`.
 
 Run the Rust tests with `cargo test --manifest-path src-tauri/Cargo.toml`. Build and type-check the frontend with `npm run build`.
 
+Use the repository scripts for reproducible local and CI checks:
+
+- `npm test` builds the frontend, runs the Vitest frontend behavior suite, and runs the Rust test suite.
+- `npm run test:frontend` runs the frontend auto-lock, modal cleanup, clipboard, search, and error-path tests in a DOM environment.
+- `npm run lint` runs Biome on the frontend and Clippy with warnings treated as errors on the Rust backend.
+- `npm run format` formats frontend files with Biome and Rust files with rustfmt.
+- The `test:rust`, `lint:frontend`, `lint:rust`, `format:frontend`, and `format:rust` scripts can run each surface independently.
+
+## Code structure
+
+The TypeScript entrypoint in `src/main.ts` only coordinates application startup and lifecycle behavior:
+
+- `vault-api.ts` contains typed Tauri command wrappers.
+- `state.ts` owns unlocked UI state and auto-lock scheduling.
+- `clipboard.ts` owns timed clipboard clearing.
+- `modal.ts` owns entry, TOTP, backup, and vault-settings dialogs.
+- `generator.ts` owns password generation UI behavior.
+- `rendering.ts` owns authentication, dashboard, filtering, and entry-list rendering.
+- `ui.ts` contains shared DOM, icon, escaping, toast, and error helpers.
+
+The Rust entrypoint in `src-tauri/src/lib.rs` only assembles Tauri state and commands:
+
+- `models.rs` defines encrypted-vault and command response models.
+- `crypto.rs` owns Argon2id derivation and XChaCha20-Poly1305 sealing/opening.
+- `persistence.rs` owns vault paths, atomic writes, and encrypted-file loading.
+- `totp.rs` owns Base32 secret handling and TOTP generation.
+- `commands.rs` validates command input and coordinates the other backend modules.
+
 ## Vault storage
 
-The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entry fields are authenticated ciphertext. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
+The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entry fields are authenticated ciphertext. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
+
+## Backups and master-password changes
+
+Open **Vault settings** from the sidebar to export a `.passman` backup to the operating system's Downloads folder, restore an exported backup, or change the master password.
+
+- An exported backup is a newly encrypted snapshot containing the vault salt, a fresh nonce, and authenticated ciphertext. Decrypted entries and keys are never sent to the frontend or written to the backup.
+- A backup remains protected by the master password that was active when it was exported. Changing the current vault's master password does not change existing backup passwords.
+- Restoring requires the backup's master password. The frontend reads only the encrypted backup envelope; Passman decrypts and validates it in Rust before replacing the active vault, then writes the restored data with a fresh nonce.
+- Changing the master password verifies the current password, generates a fresh random salt, derives a new key, and re-encrypts the vault. The previous master password no longer unlocks the active vault.
+
+Keep backup files in a separate, access-controlled location. Their security still depends on the strength of the master password that protects them.
 
 ## Security notes and limitations
+
+See [SECURITY.md](SECURITY.md) for security best practices, backup guidance, and vulnerability reporting notes.
 
 - This is an MVP for one local vault. It has no sync, browser integration, or multi-user support.
 - The master password is not stored and cannot be recovered. If forgotten, use the in-app reset option to delete the vault and start over; existing entries cannot be recovered.
 - Use a strong, unique master password. A local attacker with a copy of the vault can attempt offline guesses; Argon2id makes guesses more expensive but does not make weak passwords safe.
-- This app has not undergone an independent security audit. Lock your vault when leaving the device unattended, and keep encrypted backups if you need recovery from device loss. Backups remain protected only as strongly as the master password.
+- This app has not undergone an independent security audit. Lock your vault when leaving the device unattended, and keep encrypted backups in a separate location if you need recovery from device loss. Backups remain protected only as strongly as their master passwords.
 - Clipboard clearing is best-effort because desktop clipboard permissions and clipboard managers vary. Other applications may also retain copied content.
 - TOTP setup keys are encrypted with the rest of the vault and never shown in entry summaries. The current implementation supports Base32 secrets and six-digit, 30-second HMAC-SHA1 codes; QR-code scanning and custom issuer/algorithm options are not included.
 - Add or update an entry before attaching its authenticator. In the entry editor, paste the Base32 setup key under “Authenticator codes”; select the key icon on the saved item to view/copy the current code.

@@ -7,15 +7,26 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "npm run build && npm run test:frontend && npm run test:rust",
+    "test:frontend": "vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "lint": "npm run lint:frontend && npm run lint:rust",
+    "lint:frontend": "biome lint src/main.ts src/vault-api.ts src/state.ts src/clipboard.ts src/modal.ts src/generator.ts src/rendering.ts src/ui.ts src/styles.css tests/frontend vite.config.ts vitest.config.ts",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "format": "npm run format:frontend && npm run format:rust",
+    "format:frontend": "biome format --write src/main.ts src/vault-api.ts src/state.ts src/clipboard.ts src/modal.ts src/generator.ts src/rendering.ts src/ui.ts src/styles.css tests/frontend index.html vite.config.ts vitest.config.ts package.json tsconfig.json biome.json",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/api": "^2"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@tauri-apps/cli": "^2",
-		"vite": "^8.0.16",
-    "typescript": "~6.0.3"
+    "jsdom": "^29.1.1",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.5"
   }
 }
