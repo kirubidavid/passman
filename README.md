@@ -28,9 +28,37 @@ Build a distributable app with `npm run tauri build`.
 
 Run the Rust tests with `cargo test --manifest-path src-tauri/Cargo.toml`. Build and type-check the frontend with `npm run build`.
 
+Use the repository scripts for reproducible local and CI checks:
+
+- `npm test` builds the frontend, runs the Vitest frontend behavior suite, and runs the Rust test suite.
+- `npm run test:frontend` runs the frontend auto-lock, modal cleanup, clipboard, search, and error-path tests in a DOM environment.
+- `npm run lint` runs Biome on the frontend and Clippy with warnings treated as errors on the Rust backend.
+- `npm run format` formats frontend files with Biome and Rust files with rustfmt.
+- The `test:rust`, `lint:frontend`, `lint:rust`, `format:frontend`, and `format:rust` scripts can run each surface independently.
+
+## Code structure
+
+The TypeScript entrypoint in `src/main.ts` only coordinates application startup and lifecycle behavior:
+
+- `vault-api.ts` contains typed Tauri command wrappers.
+- `state.ts` owns unlocked UI state and auto-lock scheduling.
+- `clipboard.ts` owns timed clipboard clearing.
+- `modal.ts` owns entry, TOTP, backup, and vault-settings dialogs.
+- `generator.ts` owns password generation UI behavior.
+- `rendering.ts` owns authentication, dashboard, filtering, and entry-list rendering.
+- `ui.ts` contains shared DOM, icon, escaping, toast, and error helpers.
+
+The Rust entrypoint in `src-tauri/src/lib.rs` only assembles Tauri state and commands:
+
+- `models.rs` defines encrypted-vault and command response models.
+- `crypto.rs` owns Argon2id derivation and XChaCha20-Poly1305 sealing/opening.
+- `persistence.rs` owns vault paths, atomic writes, and encrypted-file loading.
+- `totp.rs` owns Base32 secret handling and TOTP generation.
+- `commands.rs` validates command input and coordinates the other backend modules.
+
 ## Vault storage
 
-The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entry fields are authenticated ciphertext. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
+The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entry fields are authenticated ciphertext. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
 
 ## Backups and master-password changes
 
