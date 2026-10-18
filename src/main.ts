@@ -382,7 +382,7 @@ function openEntryModal(entry?: EntryDetails) {
   const editing = Boolean(entry);
   const favorite = entry?.favorite ?? false;
   const note = entry?.notes ?? "";
-    $("#modal-root").innerHTML = `<div class="modal-backdrop" id="modal-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><div><p class="eyebrow">SECURE ITEM</p><h2 id="modal-title">${editing ? "Edit password" : "Add a password"}</h2></div><button class="icon-button" id="modal-close" aria-label="Close">${icon("close", 19)}</button></div><form id="entry-form" class="entry-form"><label>Item name <span>*</span><input name="title" maxlength="200" required placeholder="e.g. Personal email" value="${escapeHtml(entry?.title ?? "")}" autofocus /></label><label>Username or email<input name="username" maxlength="500" autocomplete="off" placeholder="name@example.com" value="${escapeHtml(entry?.username ?? "")}" /></label><label>Password <span>*</span><div class="password-field"><input name="password" type="${passwordVisible ? "text" : "password"}" maxlength="4096" required autocomplete="new-password" placeholder="Enter or generate a password" value="${escapeHtml(entry?.password ?? generatedPassword)}" /><button type="button" class="inline-action" id="toggle-password" aria-label="Show password">${icon("eye", 16)}</button><button type="button" class="inline-action generate-inline" id="modal-generate">${icon("spark", 15)} Generate</button>${!editing ? `<button type="button" class="inline-action copy-generated-inline" id="copy-entry-password" aria-label="Copy generated password" title="Copy generated password">${icon("copy", 15)}</button>` : ""}</div></label><label>Website<input name="website" maxlength="2000" placeholder="https://example.com" value="${escapeHtml(entry?.website ?? "")}" /></label><label>Notes <span class="optional">OPTIONAL</span><textarea name="notes" maxlength="10000" rows="3" placeholder="Add a note…">${escapeHtml(note)}</textarea></label><label class="favorite-toggle"><input name="favorite" type="checkbox" ${favorite ? "checked" : ""} /><span class="checkmark"></span> Add to favorites</label><div class="modal-footer"><button type="button" class="button button-quiet" id="modal-cancel">Cancel</button><button type="submit" class="button button-primary">${icon("check", 16)} ${editing ? "Save changes" : "Save password"}</button></div></form></section></div>`;
+    $("#modal-root").innerHTML = `<div class="modal-backdrop" id="modal-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><div><p class="eyebrow">SECURE ITEM</p><h2 id="modal-title">${editing ? "Edit password" : "Add a password"}</h2></div><button class="icon-button" id="modal-close" aria-label="Close">${icon("close", 19)}</button></div><form id="entry-form" class="entry-form"><label>Item name <span>*</span><input name="title" maxlength="200" required placeholder="e.g. Personal email" value="${escapeHtml(entry?.title ?? "")}" autofocus /></label><label>Username or email<input name="username" maxlength="500" autocomplete="off" placeholder="name@example.com" value="${escapeHtml(entry?.username ?? "")}" /></label><label>Password <span>*</span><div class="password-field"><input name="password" type="${passwordVisible ? "text" : "password"}" maxlength="4096" required autocomplete="new-password" placeholder="Enter or generate a password" value="${escapeHtml(entry?.password ?? generatedPassword)}" /><button type="button" class="inline-action" id="toggle-password" aria-label="Show password">${icon("eye", 16)}</button><button type="button" class="inline-action generate-inline" id="modal-generate">${icon("spark", 15)} Generate</button>${!editing ? `<button type="button" class="inline-action copy-generated-inline" id="copy-entry-password" aria-label="Copy generated password" title="Copy generated password">${icon("copy", 15)}</button>` : ""}</div></label><label>Website<input name="website" maxlength="2000" placeholder="https://example.com" value="${escapeHtml(entry?.website ?? "")}" /></label><label>Notes <span class="optional">OPTIONAL</span><textarea name="notes" maxlength="10000" rows="3" placeholder="Add a note…">${escapeHtml(note)}</textarea></label><label class="favorite-toggle"><input name="favorite" type="checkbox" ${favorite ? "checked" : ""} /><span class="checkmark"></span> Add to favorites</label><p class="form-message" id="entry-message" role="status" aria-live="polite"></p><div class="modal-footer"><button type="button" class="button button-quiet" id="modal-cancel">Cancel</button><button type="submit" class="button button-primary">${icon("check", 16)} ${editing ? "Save changes" : "Save password"}</button></div></form></section></div>`;
   $("#entry-form").insertAdjacentHTML("beforeend", `<div class="totp-settings"><div class="totp-settings-head"><span class="totp-settings-icon">${icon("key", 16)}</span><span><strong>Authenticator codes</strong><small>${entry ? (entry.hasTotp ? "Set up for this item" : "Not configured") : "Save this item first to set up codes."}</small></span>${entry?.hasTotp ? '<button type="button" class="text-danger" id="remove-totp">Remove</button>' : ""}</div>${entry ? `<label for="totp-secret-input">${entry.hasTotp ? "Replace setup key" : "Setup key"}<input id="totp-secret-input" type="password" autocomplete="off" placeholder="Paste the Base32 setup key" maxlength="128" /></label><button type="button" class="button button-quiet" id="save-totp">${icon("key", 15)} ${entry.hasTotp ? "Update authenticator" : "Set up authenticator"}</button>` : ""}</div>`);
   const close = closeModal;
   $("#modal-close").addEventListener("click", close);
@@ -432,6 +432,11 @@ function openEntryModal(entry?: EntryDetails) {
       totpSecret: null,
       updatedAt: Date.now(),
     };
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    const message = $("#entry-message");
+    submit.disabled = true;
+    message.textContent = editing ? "Saving changes..." : "Saving password...";
+    message.classList.remove("error");
     try {
       entries = await invoke<EntrySummary[]>("save_entry", { entry: updated });
       close();
@@ -442,7 +447,13 @@ function openEntryModal(entry?: EntryDetails) {
       }
       setFilter(editing ? activeFilter : "All items");
       toast(editing ? "Password updated securely." : "Password saved securely.");
-    } catch (error) { fail(error); }
+    } catch (error) {
+      const errorMessage = String(error).replace(/^Error: /, "");
+      submit.disabled = false;
+      message.textContent = errorMessage;
+      message.classList.add("error");
+      toast(errorMessage, true);
+    }
   });
   ($("[name=title]") as HTMLInputElement).focus();
 }
