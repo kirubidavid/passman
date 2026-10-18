@@ -7,7 +7,7 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Create and unlock a vault with a master password (minimum 12 characters).
 - Generate 8–128 character passwords with selectable uppercase, lowercase, number, and symbol sets. Rust uses rejection-sampled operating-system cryptographic randomness.
 - Save, search, edit, favorite, copy, and delete login entries.
-- Track password age independently from other entry edits, with green, yellow, and red indicators based on a configurable global limit that defaults to 90 days.
+- Track password age independently from other entry edits, with green, yellow, and red indicators based on a configurable global limit that defaults to 90 days. Legacy entries remain marked **Age unknown** until their password changes; their last-updated date is shown only as an estimate alongside the encrypted migration timestamp that records when tracking began.
 - Review password health with Rust-only exact duplicate detection, offline zxcvbn strength scoring, issue counts, clear text labels, and urgency sorting. Password values are not included in frontend summaries.
 - Store an optional authenticator setup key with an entry, then generate standards-based six-digit TOTP codes that refresh every 30 seconds.
 - Export and restore portable encrypted backups through native save/open dialogs without exposing decrypted vault contents or backup file contents to the frontend.
@@ -39,6 +39,9 @@ Use the repository scripts for reproducible local and CI checks:
 - `npm run lint` runs Biome on the frontend and Clippy with warnings treated as errors on the Rust backend.
 - `npm run format` formats frontend files with Biome and Rust files with rustfmt.
 - The `test:rust`, `lint:frontend`, `lint:rust`, `format:frontend`, and `format:rust` scripts can run each surface independently.
+- GitHub Actions runs frontend tests, the TypeScript production build, Biome, rustfmt, Clippy, and Rust tests on both Ubuntu and Windows. After those checks pass, Windows builds the enterprise MSI as `passman-enterprise-msi`, and Ubuntu builds the portable AppImage as `passman-linux-appimage`.
+- Windows release builds use `tauri.windows.conf.json` to produce MSI packages only; NSIS is not generated.
+- Linux release builds use `tauri.linux.conf.json` to produce AppImage packages only; DEB and RPM packages are not generated.
 
 ## Code structure
 
@@ -62,7 +65,7 @@ The Rust entrypoint in `src-tauri/src/lib.rs` only assembles Tauri state and com
 
 ## Vault storage
 
-The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entries and vault preferences are authenticated ciphertext. The password-age limit travels with the encrypted vault and its backups, while auto-lock remains a device-specific setting in local application storage. Older vaults whose encrypted payload contains only an entry array load with the default 90-day password-age limit and migrate to the structured payload on their next save. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
+The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entries and vault preferences are authenticated ciphertext. The password-age limit travels with the encrypted vault and its backups, while auto-lock remains a device-specific setting in local application storage. Older vaults whose encrypted payload contains only an entry array load with the default 90-day password-age limit and migrate to the structured payload when age metadata is initialized or the vault is next saved. On the first unlock after password-age tracking is introduced, entries without a recorded password-change date receive an encrypted migration timestamp and the vault is atomically re-encrypted. Their previous `updatedAt` value remains available only as a clearly labeled age estimate until the password itself changes. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
 
 Vault mutations clone the unlocked snapshot while briefly holding the state mutex, then release it before encryption and atomic disk persistence. A dedicated mutation gate orders writers, and an in-memory revision counter must still match before the persisted candidate becomes the active state. Failed persistence and stale candidates leave the active in-memory vault unchanged.
 

@@ -96,6 +96,8 @@ pub(crate) struct Entry {
     pub(crate) updated_at: u64,
     #[serde(default)]
     pub(crate) password_changed_at: u64,
+    #[serde(default)]
+    pub(crate) password_age_tracking_started_at: u64,
     #[serde(default = "unknown_password_strength_score")]
     pub(crate) password_strength_score: u8,
 }
@@ -135,6 +137,7 @@ pub(crate) struct EntrySummary {
     favorite: bool,
     updated_at: u64,
     password_changed_at: u64,
+    password_age_tracking_started_at: u64,
     password_strength_score: u8,
     duplicate_password: bool,
 }
@@ -151,6 +154,7 @@ pub(crate) struct EntryDetails {
     favorite: bool,
     updated_at: u64,
     password_changed_at: u64,
+    password_age_tracking_started_at: u64,
     has_totp: bool,
     password_strength_score: u8,
     duplicate_password: bool,
@@ -179,12 +183,18 @@ impl VaultSnapshot {
     }
 }
 
-fn password_changed_at(entry: &Entry) -> u64 {
-    if entry.password_changed_at == 0 {
-        entry.updated_at
-    } else {
-        entry.password_changed_at
+pub(crate) fn initialize_legacy_password_age_tracking(
+    entries: &mut [Entry],
+    tracking_started_at: u64,
+) -> bool {
+    let mut changed = false;
+    for entry in entries {
+        if entry.password_changed_at == 0 && entry.password_age_tracking_started_at == 0 {
+            entry.password_age_tracking_started_at = tracking_started_at;
+            changed = true;
+        }
     }
+    changed
 }
 
 pub(crate) fn evaluate_password_strength(entry: &Entry) -> Result<u8, String> {
@@ -214,7 +224,8 @@ fn entry_summary(
         has_totp: entry.totp_secret.is_some(),
         favorite: entry.favorite,
         updated_at: entry.updated_at,
-        password_changed_at: password_changed_at(entry),
+        password_changed_at: entry.password_changed_at,
+        password_age_tracking_started_at: entry.password_age_tracking_started_at,
         password_strength_score,
         duplicate_password,
     }
@@ -255,7 +266,8 @@ pub(crate) fn entry_details(entries: &[Entry], entry: &Entry) -> EntryDetails {
         notes: entry.notes.clone(),
         favorite: entry.favorite,
         updated_at: entry.updated_at,
-        password_changed_at: password_changed_at(entry),
+        password_changed_at: entry.password_changed_at,
+        password_age_tracking_started_at: entry.password_age_tracking_started_at,
         has_totp: entry.totp_secret.is_some(),
         password_strength_score: entry.password_strength_score,
         duplicate_password,
@@ -302,6 +314,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_age_tracking_started_at: 0,
             password_strength_score: u8::MAX,
         };
         entry.password_strength_score = evaluate_password_strength(&entry).unwrap();
@@ -325,5 +338,18 @@ mod tests {
         assert!(summaries[0].password_strength_score <= 2);
         assert!(summaries[2].password_strength_score >= 3);
         assert!(!serde_json::to_string(&summaries).unwrap().contains(duplicate));
+    }
+
+    #[test]
+    fn legacy_summary_preserves_unknown_age_and_tracking_start() {
+        let mut legacy = entry("legacy", "legacy secret");
+        legacy.password_changed_at = 0;
+        legacy.password_age_tracking_started_at = 500;
+
+        let summaries = summarize_entries(&[legacy]);
+        let encoded = serde_json::to_value(&summaries[0]).unwrap();
+
+        assert_eq!(encoded["passwordChangedAt"], 0);
+        assert_eq!(encoded["passwordAgeTrackingStartedAt"], 500);
     }
 }

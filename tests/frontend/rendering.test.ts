@@ -21,6 +21,7 @@ import {
   authView,
   configureRendering,
   dashboardShell,
+  getEntryHealth,
   getPasswordAgeStatus,
   renderEntries,
   setFilter,
@@ -112,6 +113,62 @@ describe("vault rendering", () => {
     );
     expect(getPasswordAgeStatus(now - 91 * 86_400_000, 90, now).level).toBe(
       "red",
+    );
+  });
+
+  it("shows legacy password age as unknown and labels the fallback as estimated", () => {
+    const now = 200 * 86_400_000;
+    const health = getEntryHealth(
+      {
+        id: "legacy",
+        title: "Legacy password",
+        username: "",
+        website: "",
+        favorite: false,
+        hasTotp: false,
+        updatedAt: now - 100 * 86_400_000,
+        passwordChangedAt: 0,
+        passwordAgeTrackingStartedAt: now - 10 * 86_400_000,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
+      },
+      90,
+      now,
+    );
+
+    expect(health.age.label).toBe("Age unknown");
+    expect(health.age.estimated).toBe(true);
+    expect(health.age.level).toBe("red");
+    expect(health.age.estimateLabel).toBe("Estimated overdue");
+    expect(health.age.description).toContain("Age tracking began");
+    expect(health.age.description).toContain(
+      "Estimated age: 100 days based on the entry's last update.",
+    );
+
+    state.entries = [
+      {
+        id: "legacy",
+        title: "Legacy password",
+        username: "",
+        website: "",
+        favorite: false,
+        hasTotp: false,
+        updatedAt: now - 100 * 86_400_000,
+        passwordChangedAt: 0,
+        passwordAgeTrackingStartedAt: now - 10 * 86_400_000,
+        passwordStrengthScore: 4,
+        duplicatePassword: false,
+      },
+    ];
+    vi.setSystemTime(now);
+    dashboardShell();
+    renderEntries();
+
+    expect(document.querySelector("#entries-area")?.textContent).toContain(
+      "Age unknown",
+    );
+    expect(document.querySelector("#entries-area")?.textContent).toContain(
+      "Estimated overdue",
     );
   });
 

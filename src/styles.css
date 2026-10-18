@@ -1613,6 +1613,11 @@ textarea:focus-visible {
   background: #f6effa;
   border-color: #e1d2e9;
 }
+.health-label-estimate {
+  color: #4f6675;
+  background: #eef4f7;
+  border-color: #cfdee5;
+}
 .entry-password {
   display: flex;
   align-items: center;

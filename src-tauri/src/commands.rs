@@ -3,7 +3,7 @@ use crate::{
     models::{
         AppState, CURRENT_KDF, Entry, EntryDetails, EntrySummary, MAX_ENTRIES, UnlockedVault,
         VaultPreferences, VaultSnapshot, entry_details, evaluate_password_strength,
-        summarize_entries,
+        initialize_legacy_password_age_tracking, summarize_entries,
     },
     persistence::{
         load_vault, load_vault_data, persist, vault_path, write_vault, write_vault_with_kdf,
@@ -192,16 +192,26 @@ fn persist_vault_mutation<T>(
 
 fn update_entry_timestamps(entry: &mut Entry, previous: Option<&Entry>, now: u64) {
     entry.updated_at = now;
-    entry.password_changed_at = match previous {
+    match previous {
         Some(previous) if previous.password == entry.password => {
-            if previous.password_changed_at == 0 {
-                previous.updated_at
-            } else {
-                previous.password_changed_at
-            }
+            entry.password_changed_at = previous.password_changed_at;
+            entry.password_age_tracking_started_at =
+                previous.password_age_tracking_started_at;
         }
-        _ => now,
-    };
+        _ => {
+            entry.password_changed_at = now;
+            entry.password_age_tracking_started_at = 0;
+        }
+    }
+}
+
+fn current_time_millis() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch".to_string())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "System time is outside the supported range".to_string())
 }
 
 #[derive(Serialize)]
@@ -275,7 +285,17 @@ pub(crate) fn unlock_vault(
     let password = Zeroizing::new(password);
     let path = vault_path(&app)?;
     let _mutation_guard = lock_mutations(&state)?;
-    let (key, salt, kdf, data) = load_vault(&path, password.as_str())?;
+    let (key, salt, kdf, mut data) = load_vault(&path, password.as_str())?;
+    if initialize_legacy_password_age_tracking(&mut data.entries, current_time_millis()?) {
+        write_vault_with_kdf(
+            &path,
+            &salt,
+            &key,
+            &kdf,
+            &data.entries,
+            &data.preferences,
+        )?;
+    }
     let preferences = data.preferences;
     let mut guard = state
         .vault
@@ -352,8 +372,9 @@ pub(crate) async fn import_backup(
         return Ok(None);
     };
     let backup_path = local_backup_path(selected_backup)?;
-    let (key, salt, kdf, data) = load_vault(&backup_path, password.as_str())
+    let (key, salt, kdf, mut data) = load_vault(&backup_path, password.as_str())
         .map_err(|error| format!("Could not restore backup: {error}"))?;
+    initialize_legacy_password_age_tracking(&mut data.entries, current_time_millis()?);
     let snapshot = VaultSnapshot::from_data(&data);
     mutate_vault(
         &state,
@@ -643,12 +664,7 @@ pub(crate) fn save_entry(
         return Err("Authenticator secret is invalid".into());
     }
     entry.password_strength_score = evaluate_password_strength(&entry)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "System clock is before the Unix epoch".to_string())?
-        .as_millis()
-        .try_into()
-        .map_err(|_| "System time is outside the supported range".to_string())?;
+    let now = current_time_millis()?;
     let path = vault_path(&app)?;
     persist_vault_mutation(&state, &path, |vault| {
         if let Some(index) = vault.entries.iter().position(|e| e.id == entry.id) {
@@ -780,6 +796,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_age_tracking_started_at: 0,
             password_strength_score: u8::MAX,
         }
     }
@@ -982,6 +999,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_age_tracking_started_at: 0,
             password_strength_score: u8::MAX,
         }];
         let key = [7_u8; KEY_LEN];
@@ -1020,20 +1038,34 @@ mod tests {
     fn password_age_changes_only_when_the_password_changes() {
         let mut previous = persistence_test_entry("same secret");
         previous.password_changed_at = 0;
+        previous.password_age_tracking_started_at = 400;
         let mut metadata_edit = previous.clone();
         metadata_edit.title = "Renamed".into();
         update_entry_timestamps(&mut metadata_edit, Some(&previous), 500);
         assert_eq!(metadata_edit.updated_at, 500);
-        assert_eq!(metadata_edit.password_changed_at, 1);
+        assert_eq!(metadata_edit.password_changed_at, 0);
+        assert_eq!(metadata_edit.password_age_tracking_started_at, 400);
 
         let mut password_edit = previous.clone();
         password_edit.password = "new secret".into();
         update_entry_timestamps(&mut password_edit, Some(&previous), 500);
         assert_eq!(password_edit.password_changed_at, 500);
+        assert_eq!(password_edit.password_age_tracking_started_at, 0);
 
         let mut new_entry = persistence_test_entry("new secret");
         update_entry_timestamps(&mut new_entry, None, 700);
         assert_eq!(new_entry.password_changed_at, 700);
+    }
+
+    #[test]
+    fn legacy_age_tracking_records_migration_time_once() {
+        let mut entries = vec![persistence_test_entry("legacy secret")];
+        entries[0].password_changed_at = 0;
+
+        assert!(initialize_legacy_password_age_tracking(&mut entries, 500));
+        assert_eq!(entries[0].password_age_tracking_started_at, 500);
+        assert!(!initialize_legacy_password_age_tracking(&mut entries, 700));
+        assert_eq!(entries[0].password_age_tracking_started_at, 500);
     }
 
     #[test]
@@ -1082,6 +1114,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_age_tracking_started_at: 0,
             password_strength_score: u8::MAX,
         }];
 
@@ -1217,6 +1250,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_age_tracking_started_at: 0,
             password_strength_score: u8::MAX,
         }];
         write_vault(&path, &old_salt, &old_key, &entries).unwrap();

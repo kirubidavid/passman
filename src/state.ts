@@ -7,6 +7,7 @@ export interface EntrySummary {
   hasTotp: boolean;
   updatedAt: number;
   passwordChangedAt: number;
+  passwordAgeTrackingStartedAt?: number;
   passwordStrengthScore: number;
   duplicatePassword: boolean;
 }

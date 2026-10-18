@@ -1,37 +1,160 @@
-name: Rust
+name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
+  quality:
+    name: Quality checks (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Install Linux desktop dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install --yes \
-          libwebkit2gtk-4.1-dev \
-          build-essential \
-          curl \
-          wget \
-          file \
-          libxdo-dev \
-          libssl-dev \
-          librsvg2-dev \
-          libayatana-appindicator3-dev \
-          pkg-config \
-          libglib2.0-dev
-    - name: Build
-      run: cargo build --manifest-path src-tauri/Cargo.toml --verbose
-    - name: Run tests
-      run: cargo test --manifest-path src-tauri/Cargo.toml --verbose
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            pkg-config \
+            libglib2.0-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm run test:frontend
+
+      - name: Build and type-check frontend
+        run: npm run build
+
+      - name: Run Biome lint
+        run: npm run lint:frontend
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --verbose
+
+  msi:
+    name: Windows MSI
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build enterprise MSI
+        run: npm run tauri build -- --bundles msi --ci
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: passman-enterprise-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14
+
+  appimage:
+    name: Linux AppImage
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux bundling dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            pkg-config \
+            libglib2.0-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Linux AppImage
+        run: npm run tauri build -- --bundles appimage --ci
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: passman-linux-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

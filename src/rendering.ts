@@ -56,6 +56,14 @@ function timeLabel(timestamp: number) {
 
 const DAY_MS = 86_400_000;
 
+function dateLabel(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(timestamp);
+}
+
 export function getPasswordAgeStatus(
   passwordChangedAt: number,
   limitDays = getPasswordAgeLimitDays(),
@@ -88,22 +96,43 @@ export function getEntryHealth(
   limitDays = getPasswordAgeLimitDays(),
   now = Date.now(),
 ) {
-  const age = getPasswordAgeStatus(
-    entry.passwordChangedAt || entry.updatedAt,
+  const ageKnown = entry.passwordChangedAt > 0;
+  const derivedAge = getPasswordAgeStatus(
+    ageKnown ? entry.passwordChangedAt : entry.updatedAt,
     limitDays,
     now,
   );
+  const estimatedAgeDays = Math.max(
+    0,
+    Math.floor((now - entry.updatedAt) / DAY_MS),
+  );
+  const trackingStartedAt = entry.passwordAgeTrackingStartedAt ?? 0;
+  const age = ageKnown
+    ? { ...derivedAge, estimated: false, estimateLabel: "" }
+    : {
+        ...derivedAge,
+        label: "Age unknown",
+        description: `${trackingStartedAt > 0 ? `Age tracking began ${dateLabel(trackingStartedAt)}. ` : "Age tracking began when this vault was migrated. "}The exact password age remains unknown until the password changes. Estimated age: ${estimatedAgeDays} days based on the entry's last update.`,
+        estimated: true,
+        estimateLabel:
+          derivedAge.level === "red"
+            ? "Estimated overdue"
+            : derivedAge.level === "yellow"
+              ? "Estimated due soon"
+              : "Estimated current",
+      };
   const weak = entry.passwordStrengthScore <= 2;
   const duplicate = entry.duplicatePassword;
   return {
     age,
     weak,
     duplicate,
-    hasIssue: age.level !== "green" || weak || duplicate,
+    hasIssue: age.estimated || age.level !== "green" || weak || duplicate,
     urgency:
       (age.level === "red" ? 100 : age.level === "yellow" ? 10 : 0) +
       (duplicate ? 40 : 0) +
-      (weak ? 20 : 0),
+      (weak ? 20 : 0) +
+      (age.estimated && age.level === "green" ? 5 : 0),
   };
 }
 
@@ -311,7 +340,7 @@ export function renderEntries() {
     .map((entry) => {
       const id = escapeHtml(entry.id);
       const health = getEntryHealth(entry);
-      return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password"><span class="password-age password-age-${health.age.level}" title="${escapeHtml(health.age.description)}" aria-label="${escapeHtml(health.age.description)}"><span class="password-age-dot" aria-hidden="true"></span>${health.age.label}</span>${health.duplicate ? '<span class="health-label health-label-duplicate">Duplicate</span>' : ""}${health.weak ? `<span class="health-label health-label-weak">Weak (${entry.passwordStrengthScore}/4)</span>` : ""}<span>${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</span></div></article>`;
+      return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password"><span class="password-age password-age-${health.age.level}" title="${escapeHtml(health.age.description)}" aria-label="${escapeHtml(health.age.description)}"><span class="password-age-dot" aria-hidden="true"></span>${health.age.label}</span>${health.age.estimated ? `<span class="health-label health-label-estimate">${health.age.estimateLabel}</span>` : ""}${health.duplicate ? '<span class="health-label health-label-duplicate">Duplicate</span>' : ""}${health.weak ? `<span class="health-label health-label-weak">Weak (${entry.passwordStrengthScore}/4)</span>` : ""}<span>${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</span></div></article>`;
     })
     .join("")}</div>`;
   area.querySelectorAll<HTMLButtonElement>(".entry-copy").forEach((button) => {

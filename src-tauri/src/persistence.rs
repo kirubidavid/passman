@@ -270,6 +270,7 @@ mod tests {
             favorite: false,
             updated_at: 1,
             password_changed_at: 1,
+            password_age_tracking_started_at: 0,
             password_strength_score: u8::MAX,
         }
     }
