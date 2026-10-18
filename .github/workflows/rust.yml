@@ -16,6 +16,21 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install Linux desktop dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes \
+          libwebkit2gtk-4.1-dev \
+          build-essential \
+          curl \
+          wget \
+          file \
+          libxdo-dev \
+          libssl-dev \
+          librsvg2-dev \
+          libayatana-appindicator3-dev \
+          pkg-config \
+          libglib2.0-dev
     - name: Build
       run: cargo build --manifest-path src-tauri/Cargo.toml --verbose
     - name: Run tests
