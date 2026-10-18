@@ -11,7 +11,7 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Export and restore portable encrypted backups without exposing decrypted vault contents to the frontend.
 - Change the master password by verifying the current password and re-encrypting the vault with a fresh random salt.
 - Encrypt the vault with XChaCha20-Poly1305; derive a 256-bit key using Argon2id with a random salt.
-- Decrypted vault data and the key are held in application memory only while unlocked. Lock the vault or leave it idle for five minutes to clear that state.
+- Decrypted vault data and the key are held in application memory only while unlocked. The configurable auto-lock timeout defaults to five minutes and is checked again after window focus, visibility, suspend/resume, and supported workstation-lock transitions.
 - Copied passwords are cleared from the clipboard after 30 seconds when clipboard read-back is permitted.
 
 ## Requirements

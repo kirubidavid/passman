@@ -30,6 +30,10 @@ interface Status { exists: boolean; unlocked: boolean; entryCount: number }
 interface GeneratorOptions { length: number; uppercase: boolean; lowercase: boolean; numbers: boolean; symbols: boolean }
 interface TotpResult { code: string; secondsRemaining: number }
 
+const AUTO_LOCK_STORAGE_KEY = "passman.autoLockMinutes";
+const AUTO_LOCK_OPTIONS = [1, 5, 15, 30, 60] as const;
+const DEFAULT_AUTO_LOCK_MINUTES = 5;
+
 const $ = <T extends HTMLElement>(selector: string, root: ParentNode = document): T => {
   const element = root.querySelector<T>(selector);
   if (!element) throw new Error(`Missing UI element: ${selector}`);
@@ -69,6 +73,9 @@ let toastTimer = 0;
 let clipboardTimer = 0;
 let passwordVisible = false;
 let totpRefreshTimer = 0;
+let lastActivityAt = Date.now();
+let autoLockActive = false;
+let lockInProgress = false;
 
 function toast(message: string, error = false) {
   const el = $("#toast");
@@ -79,9 +86,71 @@ function toast(message: string, error = false) {
   toastTimer = window.setTimeout(() => el.classList.remove("show"), 3000);
 }
 
-function armAutoLock() {
+function getAutoLockMinutes() {
+  const stored = Number(localStorage.getItem(AUTO_LOCK_STORAGE_KEY));
+  return AUTO_LOCK_OPTIONS.includes(stored as (typeof AUTO_LOCK_OPTIONS)[number])
+    ? stored
+    : DEFAULT_AUTO_LOCK_MINUTES;
+}
+
+function scheduleAutoLock() {
+  if (!autoLockActive) return;
   window.clearTimeout(lockTimer);
-  lockTimer = window.setTimeout(() => void lockVault(), 5 * 60 * 1000);
+  const remaining = getAutoLockMinutes() * 60_000 - (Date.now() - lastActivityAt);
+  if (remaining <= 0) {
+    void lockVault();
+    return;
+  }
+  lockTimer = window.setTimeout(checkAutoLockDeadline, remaining);
+}
+
+function checkAutoLockDeadline() {
+  if (!autoLockActive) return;
+  if (Date.now() - lastActivityAt >= getAutoLockMinutes() * 60_000) {
+    void lockVault();
+  } else {
+    scheduleAutoLock();
+  }
+}
+
+function recordActivity() {
+  if (!autoLockActive) return;
+  lastActivityAt = Date.now();
+  scheduleAutoLock();
+}
+
+function handleLifecycleChange() {
+  checkAutoLockDeadline();
+}
+
+function startAutoLock() {
+  if (autoLockActive) return;
+  autoLockActive = true;
+  lastActivityAt = Date.now();
+  document.addEventListener("pointerdown", recordActivity, { passive: true });
+  document.addEventListener("touchstart", recordActivity, { passive: true });
+  document.addEventListener("keydown", recordActivity);
+  document.addEventListener("wheel", recordActivity, { passive: true });
+  document.addEventListener("scroll", recordActivity, { passive: true, capture: true });
+  document.addEventListener("visibilitychange", handleLifecycleChange);
+  window.addEventListener("blur", handleLifecycleChange);
+  window.addEventListener("focus", handleLifecycleChange);
+  window.addEventListener("pageshow", handleLifecycleChange);
+  scheduleAutoLock();
+}
+
+function stopAutoLock() {
+  autoLockActive = false;
+  window.clearTimeout(lockTimer);
+  document.removeEventListener("pointerdown", recordActivity);
+  document.removeEventListener("touchstart", recordActivity);
+  document.removeEventListener("keydown", recordActivity);
+  document.removeEventListener("wheel", recordActivity);
+  document.removeEventListener("scroll", recordActivity, true);
+  document.removeEventListener("visibilitychange", handleLifecycleChange);
+  window.removeEventListener("blur", handleLifecycleChange);
+  window.removeEventListener("focus", handleLifecycleChange);
+  window.removeEventListener("pageshow", handleLifecycleChange);
 }
 function fail(error: unknown) { toast(String(error).replace(/^Error: /, ""), true); }
 function favicon(title: string) { return title.trim().charAt(0).toUpperCase() || "P"; }
@@ -158,11 +227,26 @@ function closeModal() {
 
 function openVaultSettings() {
   $("#modal-root").innerHTML = `<div class="modal-backdrop" id="settings-backdrop"><section class="entry-modal vault-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div class="modal-head"><div><p class="eyebrow">VAULT MANAGEMENT</p><h2 id="settings-title">Vault settings</h2></div><button class="icon-button" id="settings-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro">Back up your encrypted vault, restore a previous backup, or rotate its master password.</p><div class="settings-actions"><button class="settings-action" id="export-backup"><span class="settings-action-icon">${icon("download", 18)}</span><span><strong>Export encrypted backup</strong><small>Create a portable encrypted copy protected by your current master password.</small></span></button><button class="settings-action" id="restore-backup"><span class="settings-action-icon">${icon("upload", 18)}</span><span><strong>Restore encrypted backup</strong><small>Validate and replace this vault with a previously exported copy.</small></span></button><button class="settings-action" id="change-password"><span class="settings-action-icon">${icon("key", 18)}</span><span><strong>Change master password</strong><small>Re-encrypt the vault with a fresh salt and a new master password.</small></span></button></div><p class="settings-footnote">${icon("shield", 14)} Backup files contain authenticated ciphertext only.</p></section></div>`;
+  $(".settings-actions").insertAdjacentHTML("beforebegin", `<label class="auto-lock-setting" for="auto-lock-timeout"><span><strong>Auto-lock timeout</strong><small>Activity resets the timer. Passman checks the deadline again after focus, resume, or workstation unlock.</small></span><select id="auto-lock-timeout">${AUTO_LOCK_OPTIONS.map((minutes) => `<option value="${minutes}" ${minutes === getAutoLockMinutes() ? "selected" : ""}>${minutes} ${minutes === 1 ? "minute" : "minutes"}</option>`).join("")}</select></label>`);
   $("#settings-close").addEventListener("click", closeModal);
   $("#settings-backdrop").addEventListener("click", (event) => { if (event.target === $("#settings-backdrop")) closeModal(); });
   $("#export-backup").addEventListener("click", () => void exportBackup());
   $("#restore-backup").addEventListener("click", openRestoreModal);
   $("#change-password").addEventListener("click", openChangePasswordModal);
+  $("#auto-lock-timeout").addEventListener("change", (event) => {
+    const minutes = Number((event.currentTarget as HTMLSelectElement).value);
+    if (!AUTO_LOCK_OPTIONS.includes(minutes as (typeof AUTO_LOCK_OPTIONS)[number])) {
+      toast("Choose a supported auto-lock timeout.", true);
+      return;
+    }
+    try {
+      localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(minutes));
+      recordActivity();
+      toast(`Auto-lock timeout set to ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`);
+    } catch (error) {
+      fail(error);
+    }
+  });
   $("#export-backup").focus();
 }
 
@@ -279,9 +363,7 @@ function dashboardShell() {
   $("#vault-settings").addEventListener("click", openVaultSettings);
   $("#lock-button").addEventListener("click", () => void lockVault());
   document.addEventListener("keydown", keyboardShortcuts);
-  ["pointerdown", "touchstart"].forEach((name) => document.addEventListener(name, armAutoLock, { passive: true }));
-  document.addEventListener("keydown", armAutoLock);
-  armAutoLock();
+  startAutoLock();
 }
 
 async function generate() {
@@ -481,11 +563,10 @@ async function copyText(value: string) {
 }
 
 async function lockVault() {
+  if (lockInProgress) return;
+  lockInProgress = true;
   try {
-    window.clearTimeout(lockTimer);
-    document.removeEventListener("pointerdown", armAutoLock);
-    document.removeEventListener("keydown", armAutoLock);
-    document.removeEventListener("touchstart", armAutoLock);
+    stopAutoLock();
     closeModal();
     await invoke("lock_vault");
     entries = [];
@@ -494,7 +575,12 @@ async function lockVault() {
     document.removeEventListener("keydown", keyboardShortcuts);
     const status = await invoke<Status>("vault_status");
     authView(status.exists);
-  } catch (error) { fail(error); }
+  } catch (error) {
+    fail(error);
+    startAutoLock();
+  } finally {
+    lockInProgress = false;
+  }
 }
 
 function keyboardShortcuts(event: KeyboardEvent) {
