@@ -7,7 +7,7 @@ vi.mock("../../src/vault-api", () => ({ vaultApi }));
 vi.mock("../../src/clipboard", () => ({ copyText: vi.fn() }));
 vi.mock("../../src/generator", () => ({ generatePassword: vi.fn() }));
 
-import { closeModal, showTotp } from "../../src/modal";
+import { closeModal, confirmAction, showTotp } from "../../src/modal";
 import { state } from "../../src/state";
 
 describe("modal cleanup", () => {
@@ -66,5 +66,47 @@ describe("modal cleanup", () => {
     expect(document.querySelector("#toast")?.classList.contains("error")).toBe(
       true,
     );
+  });
+
+  it("requires the exact reset phrase before enabling a destructive action", async () => {
+    const confirmed = confirmAction({
+      title: "Permanently reset this vault?",
+      description: "Every saved password will be deleted.",
+      confirmLabel: "Reset vault permanently",
+      phrase: "RESET VAULT",
+    });
+    const input = document.querySelector<HTMLInputElement>(
+      ".confirmation-phrase input",
+    );
+    const button = document.querySelector<HTMLButtonElement>(".button-danger");
+    if (!input || !button)
+      throw new Error("Confirmation dialog was not rendered");
+
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(button.disabled).toBe(true);
+    input.value = "reset vault";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(button.disabled).toBe(true);
+
+    input.value = "RESET VAULT";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(button.disabled).toBe(false);
+    button.click();
+
+    await expect(confirmed).resolves.toBe(true);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+
+  it("treats Escape as cancellation for confirmation dialogs", async () => {
+    const confirmed = confirmAction({
+      title: "Delete password?",
+      description: "This cannot be undone.",
+      confirmLabel: "Delete password",
+    });
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+
+    await expect(confirmed).resolves.toBe(false);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   });
 });

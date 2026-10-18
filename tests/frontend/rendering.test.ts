@@ -4,10 +4,12 @@ const vaultApi = vi.hoisted(() => ({
   create: vi.fn(),
   unlock: vi.fn(),
 }));
+const confirmAction = vi.hoisted(() => vi.fn());
 vi.mock("../../src/vault-api", () => ({ vaultApi }));
 vi.mock("../../src/clipboard", () => ({ copyText: vi.fn() }));
 vi.mock("../../src/generator", () => ({ generatePassword: vi.fn() }));
 vi.mock("../../src/modal", () => ({
+  confirmAction,
   openEntryModal: vi.fn(),
   openVaultSettings: vi.fn(),
   showTotp: vi.fn(),
@@ -30,6 +32,7 @@ describe("vault rendering", () => {
   };
 
   beforeEach(() => {
+    vi.clearAllMocks();
     document.body.innerHTML = '<div id="app"></div><div id="toast"></div>';
     configureRendering(callbacks);
     state.entries = [
@@ -112,5 +115,22 @@ describe("vault rendering", () => {
 
     expect(submit.disabled).toBe(false);
     expect(callbacks.loadDashboard).not.toHaveBeenCalled();
+  });
+
+  it("requires the reset-vault phrase dialog before resetting", async () => {
+    confirmAction.mockResolvedValue(true);
+    callbacks.resetVault.mockResolvedValue();
+    authView(true);
+
+    expect(document.querySelector("#modal-root")).not.toBeNull();
+    document.querySelector<HTMLButtonElement>("#reset-vault")?.click();
+
+    await vi.waitFor(() => expect(callbacks.resetVault).toHaveBeenCalledOnce());
+    expect(confirmAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confirmLabel: "Reset vault permanently",
+        phrase: "RESET VAULT",
+      }),
+    );
   });
 });

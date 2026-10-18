@@ -1,6 +1,11 @@
 import { copyText } from "./clipboard";
 import { generatePassword } from "./generator";
-import { openEntryModal, openVaultSettings, showTotp } from "./modal";
+import {
+  confirmAction,
+  openEntryModal,
+  openVaultSettings,
+  showTotp,
+} from "./modal";
 import { state } from "./state";
 import { $, escapeHtml, fail, icon, toast } from "./ui";
 import { vaultApi } from "./vault-api";
@@ -24,10 +29,9 @@ function favicon(title: string) {
 
 function getHostname(url: string) {
   try {
-    return new URL(url.includes("://") ? url : `https://${url}`).hostname.replace(
-      /^www\./,
-      "",
-    );
+    return new URL(
+      url.includes("://") ? url : `https://${url}`,
+    ).hostname.replace(/^www\./, "");
   } catch {
     return url;
   }
@@ -64,7 +68,7 @@ export function authView(exists: boolean, message = "") {
         ${exists ? '<button class="link-button" id="reset-vault">Forgot master password?</button>' : '<p class="auth-warning">Keep your master password safe. It cannot be recovered.</p>'}
       </section>
       <div class="auth-decoration"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="decoration-core">${icon("key", 40)}</div><span class="float-chip chip-one">${icon("shield", 15)} Private by design</span><span class="float-chip chip-two">256-bit encryption</span></div>
-    </main>`;
+    </main><div id="modal-root"></div>`;
   $("#auth-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const password = $<HTMLInputElement>("#master-password").value;
@@ -86,15 +90,21 @@ export function authView(exists: boolean, message = "") {
       submit.disabled = false;
     }
   });
-  document.querySelector<HTMLButtonElement>("#reset-vault")?.addEventListener("click", () => {
-    if (
-      confirm(
-        "Reset this vault? This permanently deletes all saved entries. This action cannot be undone.",
-      )
-    ) {
-      void callbacks.resetVault();
-    }
-  });
+  document
+    .querySelector<HTMLButtonElement>("#reset-vault")
+    ?.addEventListener("click", async () => {
+      if (
+        await confirmAction({
+          title: "Permanently reset this vault?",
+          description:
+            "This deletes the encrypted vault and every saved password. This action cannot be undone.",
+          confirmLabel: "Reset vault permanently",
+          phrase: "RESET VAULT",
+        })
+      ) {
+        await callbacks.resetVault();
+      }
+    });
 }
 
 export function dashboardShell() {
@@ -127,9 +137,18 @@ export function dashboardShell() {
       </main>
     </div><div id="modal-root"></div>`;
   $("#add-entry").addEventListener("click", () => openEntryModal());
-  $("#generate-button").addEventListener("click", () => void generatePassword());
-  $("#refresh-password").addEventListener("click", () => void generatePassword());
-  $("#copy-generated").addEventListener("click", () => void copyText(state.generatedPassword));
+  $("#generate-button").addEventListener(
+    "click",
+    () => void generatePassword(),
+  );
+  $("#refresh-password").addEventListener(
+    "click",
+    () => void generatePassword(),
+  );
+  $("#copy-generated").addEventListener(
+    "click",
+    () => void copyText(state.generatedPassword),
+  );
   $("#password-length").addEventListener("input", (event) => {
     $("#length-value").textContent = (event.target as HTMLInputElement).value;
   });
@@ -137,9 +156,13 @@ export function dashboardShell() {
     state.searchTerm = (event.target as HTMLInputElement).value.toLowerCase();
     renderEntries();
   });
-  document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((button) => {
-    button.addEventListener("click", () => setFilter(button.dataset.filter ?? "All items"));
-  });
+  document
+    .querySelectorAll<HTMLButtonElement>(".nav-item")
+    .forEach((button) => {
+      button.addEventListener("click", () =>
+        setFilter(button.dataset.filter ?? "All items"),
+      );
+    });
   $("#vault-settings").addEventListener("click", openVaultSettings);
   $("#lock-button").addEventListener("click", () => void callbacks.lockVault());
   callbacks.startAutoLock();
@@ -147,9 +170,11 @@ export function dashboardShell() {
 
 export function setFilter(filter: string) {
   state.activeFilter = filter;
-  document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((button) => {
-    button.classList.toggle("active", button.dataset.filter === filter);
-  });
+  document
+    .querySelectorAll<HTMLButtonElement>(".nav-item")
+    .forEach((button) => {
+      button.classList.toggle("active", button.dataset.filter === filter);
+    });
   const title = filter === "Favorites" ? "Favorites" : "All items";
   $("#breadcrumb-current").textContent = title;
   const titleText = $("#page-title").firstChild;
@@ -163,7 +188,9 @@ export function renderEntries() {
     const matchesSearch = `${entry.title} ${entry.username} ${entry.website}`
       .toLowerCase()
       .includes(state.searchTerm);
-    return matchesSearch && (state.activeFilter !== "Favorites" || entry.favorite);
+    return (
+      matchesSearch && (state.activeFilter !== "Favorites" || entry.favorite)
+    );
   });
   $("#total-count").textContent = String(state.entries.length);
   $("#heading-count").textContent = String(filtered.length);
@@ -172,9 +199,11 @@ export function renderEntries() {
   if (filtered.length === 0) {
     const searching = state.searchTerm.length > 0;
     area.innerHTML = `<div class="empty-state"><div class="empty-illustration">${icon(searching ? "search" : "key", 26)}</div><h3>${searching ? "No matching passwords" : state.activeFilter === "Favorites" ? "No favorites yet" : "Your vault is ready."}</h3><p>${searching ? "Try searching with a different name or username." : state.activeFilter === "Favorites" ? "Mark an item as a favorite to see it here." : "Save a login or generate a new password to get started."}</p>${!searching && state.activeFilter === "All items" ? `<button class="button button-primary" id="empty-add">${icon("plus", 15)} Add your first item</button>` : ""}</div>`;
-    area.querySelector<HTMLButtonElement>("#empty-add")?.addEventListener("click", () => {
-      openEntryModal();
-    });
+    area
+      .querySelector<HTMLButtonElement>("#empty-add")
+      ?.addEventListener("click", () => {
+        openEntryModal();
+      });
     return;
   }
   area.innerHTML = `<div class="entry-list">${filtered
@@ -209,14 +238,26 @@ export function renderEntries() {
       }
     });
   });
-  area.querySelectorAll<HTMLButtonElement>(".entry-delete").forEach((button) => {
-    button.addEventListener("click", () => {
-      const entry = state.entries.find((item) => item.id === button.dataset.id);
-      if (entry && confirm(`Delete “${entry.title}” from your vault?`)) {
-        void deleteEntry(entry.id);
-      }
+  area
+    .querySelectorAll<HTMLButtonElement>(".entry-delete")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        const entry = state.entries.find(
+          (item) => item.id === button.dataset.id,
+        );
+        if (
+          entry &&
+          (await confirmAction({
+            title: `Delete ${entry.title}?`,
+            description:
+              "This password entry will be permanently removed from your vault.",
+            confirmLabel: "Delete password",
+          }))
+        ) {
+          await deleteEntry(entry.id);
+        }
+      });
     });
-  });
 }
 
 async function deleteEntry(id: string) {
