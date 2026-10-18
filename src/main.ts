@@ -445,7 +445,7 @@ async function showTotp(id: string) {
     $("#totp-backdrop").addEventListener("click", (event) => { if (event.target === $("#totp-backdrop")) close(); });
     $("#copy-totp").addEventListener("click", () => {
       const code = $("#totp-code").textContent ?? "";
-      void navigator.clipboard.writeText(code).then(() => toast("Authenticator code copied."), () => toast("Clipboard access is unavailable.", true));
+      void copyText(code);
     });
     window.clearInterval(totpRefreshTimer);
     totpRefreshTimer = window.setInterval(async () => {
