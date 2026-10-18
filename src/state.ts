@@ -43,6 +43,7 @@ export interface VaultPreferences {
 export interface VaultSnapshot {
   entries: EntrySummary[];
   preferences: VaultPreferences;
+  securityUpgradeAvailable?: boolean;
 }
 
 export interface GeneratorOptions {
@@ -74,6 +75,7 @@ export const state = {
   preferences: {
     passwordAgeLimitDays: DEFAULT_PASSWORD_AGE_LIMIT_DAYS,
   } as VaultPreferences,
+  securityUpgradeAvailable: false,
 };
 
 export function clearUnlockedState() {
@@ -84,6 +86,7 @@ export function clearUnlockedState() {
   state.preferences = {
     passwordAgeLimitDays: DEFAULT_PASSWORD_AGE_LIMIT_DAYS,
   };
+  state.securityUpgradeAvailable = false;
 }
 
 export function getAutoLockMinutes() {
@@ -119,6 +122,7 @@ export function setPasswordAgeLimitDays(days: number) {
 export function applyVaultSnapshot(snapshot: VaultSnapshot) {
   state.entries = snapshot.entries;
   state.preferences = snapshot.preferences;
+  state.securityUpgradeAvailable = snapshot.securityUpgradeAvailable === true;
 }
 
 export function createAutoLock(onDeadline: () => void) {

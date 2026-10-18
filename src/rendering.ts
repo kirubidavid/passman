@@ -233,6 +233,7 @@ export function dashboardShell() {
       <main class="main-content">
         <header class="topbar"><div class="breadcrumb">Vault <span>/</span> <strong id="breadcrumb-current">All items</strong></div><div class="top-actions"><span class="secure-status"><span class="status-dot"></span> Vault secured</span><button class="button button-primary add-button" id="add-entry">${icon("plus", 16)}<span>New item</span></button></div></header>
         <div class="content-inner">
+          ${state.securityUpgradeAvailable ? `<button class="security-upgrade-banner" id="security-upgrade-banner" type="button">${icon("shield", 18)}<span><strong>Security upgrade available.</strong> Re-encrypt this vault with the current key-derivation parameters.</span></button>` : ""}
           <section class="welcome-row"><div><p class="eyebrow">YOUR PRIVATE SPACE</p><h1 id="page-title">All items <span class="title-count" id="heading-count">0</span></h1><p class="page-subtitle">Everything you need, securely in one place.</p></div><div class="header-decoration">${icon("shield", 26)}<span>Encrypted<br/>at rest</span></div></section>
           <section class="generator-card">
             <div class="generator-top"><div class="generator-title"><span class="generator-icon">${icon("spark", 19)}</span><div><h2>Password generator</h2><p>Make a strong, unique password in a click.</p></div></div><span class="generator-badge">${icon("shield", 13)} SECURE GENERATOR</span></div>
@@ -272,6 +273,9 @@ export function dashboardShell() {
       );
     });
   $("#vault-settings").addEventListener("click", openVaultSettings);
+  document
+    .querySelector<HTMLButtonElement>("#security-upgrade-banner")
+    ?.addEventListener("click", openVaultSettings);
   $("#lock-button").addEventListener("click", () => void callbacks.lockVault());
   callbacks.startAutoLock();
 }

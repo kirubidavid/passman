@@ -1618,6 +1618,27 @@ textarea:focus-visible {
   background: #eef4f7;
   border-color: #cfdee5;
 }
+.security-upgrade-banner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 13px 15px;
+  border: 1px solid #d9c883;
+  border-radius: 12px;
+  color: #654f0f;
+  background: #fff9df;
+  text-align: left;
+  cursor: pointer;
+}
+.security-upgrade-banner span {
+  flex: 1;
+}
+.security-upgrade-action {
+  border-color: #d9c883;
+  background: #fffdf3;
+}
 .entry-password {
   display: flex;
   align-items: center;

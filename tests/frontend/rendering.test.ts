@@ -68,6 +68,7 @@ describe("vault rendering", () => {
     ];
     state.activeFilter = "All items";
     state.searchTerm = "";
+    state.securityUpgradeAvailable = false;
   });
 
   it("filters entries using title, username, or website text", () => {
@@ -100,6 +101,16 @@ describe("vault rendering", () => {
       "No matching passwords",
     );
     expect(document.querySelector("#section-count")?.textContent).toBe("0");
+  });
+
+  it("shows a security-upgrade notice for outdated KDF parameters", () => {
+    state.securityUpgradeAvailable = true;
+
+    dashboardShell();
+
+    expect(
+      document.querySelector("#security-upgrade-banner")?.textContent,
+    ).toContain("Security upgrade available.");
   });
 
   it("uses green, yellow, and red password-age thresholds", () => {

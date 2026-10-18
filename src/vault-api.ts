@@ -50,4 +50,6 @@ export const vaultApi = {
     invoke<VaultSnapshot | null>("import_backup", { password }),
   changeMasterPassword: (currentPassword: string, newPassword: string) =>
     invoke<void>("change_master_password", { currentPassword, newPassword }),
+  upgradeKdf: (currentPassword: string) =>
+    invoke<VaultSnapshot>("upgrade_kdf", { currentPassword }),
 };

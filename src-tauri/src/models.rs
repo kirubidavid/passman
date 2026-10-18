@@ -42,6 +42,10 @@ pub(crate) const CURRENT_KDF: KdfParameters = KdfParameters {
 
 pub(crate) const LEGACY_V1_KDF: KdfParameters = CURRENT_KDF;
 
+pub(crate) fn kdf_upgrade_available(kdf: &KdfParameters) -> bool {
+    *kdf != CURRENT_KDF
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, zeroize::Zeroize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VaultPreferences {
@@ -165,6 +169,7 @@ pub(crate) struct EntryDetails {
 pub(crate) struct VaultSnapshot {
     pub(crate) entries: Vec<EntrySummary>,
     pub(crate) preferences: VaultPreferences,
+    pub(crate) security_upgrade_available: bool,
 }
 
 impl VaultSnapshot {
@@ -172,13 +177,15 @@ impl VaultSnapshot {
         Self {
             entries: summarize_entries(&vault.entries),
             preferences: vault.preferences,
+            security_upgrade_available: kdf_upgrade_available(&vault.kdf),
         }
     }
 
-    pub(crate) fn from_data(data: &VaultData) -> Self {
+    pub(crate) fn from_data(data: &VaultData, kdf: &KdfParameters) -> Self {
         Self {
             entries: summarize_entries(&data.entries),
             preferences: data.preferences,
+            security_upgrade_available: kdf_upgrade_available(kdf),
         }
     }
 }
@@ -351,5 +358,13 @@ mod tests {
 
         assert_eq!(encoded["passwordChangedAt"], 0);
         assert_eq!(encoded["passwordAgeTrackingStartedAt"], 500);
+    }
+
+    #[test]
+    fn kdf_upgrade_detection_requires_an_exact_current_parameter_match() {
+        assert!(!kdf_upgrade_available(&CURRENT_KDF));
+        let mut outdated = CURRENT_KDF;
+        outdated.iterations += 1;
+        assert!(kdf_upgrade_available(&outdated));
     }
 }

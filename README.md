@@ -12,6 +12,7 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Store an optional authenticator setup key with an entry, then generate standards-based six-digit TOTP codes that refresh every 30 seconds.
 - Export and restore portable encrypted backups through native save/open dialogs without exposing decrypted vault contents or backup file contents to the frontend.
 - Change the master password by verifying the current password and re-encrypting the vault with a fresh random salt.
+- Detect vaults using older Argon2id parameters and offer an explicit, password-confirmed security upgrade that re-encrypts with a fresh salt and the current KDF.
 - Reset an unlocked vault only after Rust verifies the current master password, with an option to create one final encrypted backup first.
 - Recover from a forgotten master password through a separate destructive reset that requires typing `RESET VAULT`, which Rust verifies again before deletion.
 - Encrypt the vault with XChaCha20-Poly1305; derive a 256-bit key using Argon2id with a random salt.
@@ -36,6 +37,8 @@ Use the repository scripts for reproducible local and CI checks:
 
 - `npm test` builds the frontend, runs the Vitest frontend behavior suite, and runs the Rust test suite.
 - `npm run test:frontend` runs the frontend auto-lock, modal cleanup, clipboard, search, and error-path tests in a DOM environment.
+- `npm run test:contracts` runs the focused frontend-to-Tauri IPC contract journeys and verifies command names, argument shapes, password-age transitions, and reset boundaries.
+- `npm run test:smoke` runs the Rust encrypted-vault smoke journeys for create/save/lock/unlock/read, backup restoration, master-password rotation, and reset persistence.
 - `npm run lint` runs Biome on the frontend and Clippy with warnings treated as errors on the Rust backend.
 - `npm run format` formats frontend files with Biome and Rust files with rustfmt.
 - The `test:rust`, `lint:frontend`, `lint:rust`, `format:frontend`, and `format:rust` scripts can run each surface independently.
@@ -63,9 +66,13 @@ The Rust entrypoint in `src-tauri/src/lib.rs` only assembles Tauri state and com
 - `totp.rs` owns Base32 secret handling and TOTP generation.
 - `commands.rs` validates command input, coordinates the other backend modules, and applies persisted mutations through revision-checked transactions.
 
+The smoke suite uses a command-contract harness rather than graphical desktop automation. Vitest checks the exact IPC calls emitted by the typed frontend API, while Rust executes the corresponding multi-step journeys against isolated temporary vault files using real Argon2id derivation, authenticated encryption, atomic persistence, and unlocked-state transitions. Native save/open dialog rendering and the operating system WebView itself remain outside this harness.
+
 ## Vault storage
 
 The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entries and vault preferences are authenticated ciphertext. The password-age limit travels with the encrypted vault and its backups, while auto-lock remains a device-specific setting in local application storage. Older vaults whose encrypted payload contains only an entry array load with the default 90-day password-age limit and migrate to the structured payload when age metadata is initialized or the vault is next saved. On the first unlock after password-age tracking is introduced, entries without a recorded password-change date receive an encrypted migration timestamp and the vault is atomically re-encrypted. Their previous `updatedAt` value remains available only as a clearly labeled age estimate until the password itself changes. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
+
+When an unlocked vault's recorded KDF parameters differ from the current settings, Passman displays **Security upgrade available**. Upgrading requires the current master password. Rust verifies that the encrypted file's salt, KDF metadata, and password-derived key still match the active unlocked vault before generating a fresh salt and re-encrypting; a mismatch aborts the upgrade instead of silently activating a different key.
 
 Vault mutations clone the unlocked snapshot while briefly holding the state mutex, then release it before encryption and atomic disk persistence. A dedicated mutation gate orders writers, and an in-memory revision counter must still match before the persisted candidate becomes the active state. Failed persistence and stale candidates leave the active in-memory vault unchanged.
 

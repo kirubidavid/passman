@@ -3,7 +3,7 @@ use crate::{
     models::{
         AppState, CURRENT_KDF, Entry, EntryDetails, EntrySummary, MAX_ENTRIES, UnlockedVault,
         VaultPreferences, VaultSnapshot, entry_details, evaluate_password_strength,
-        initialize_legacy_password_age_tracking, summarize_entries,
+        initialize_legacy_password_age_tracking, kdf_upgrade_available, summarize_entries,
     },
     persistence::{
         load_vault, load_vault_data, persist, vault_path, write_vault, write_vault_with_kdf,
@@ -89,6 +89,24 @@ fn verify_current_master_password(
     load_vault(path, password)
         .map(|_| ())
         .map_err(|_| "Current master password is incorrect".to_string())
+}
+
+fn ensure_loaded_vault_matches_active(
+    active: &UnlockedVault,
+    loaded_key: &[u8; crate::models::KEY_LEN],
+    loaded_salt: &[u8; crate::models::SALT_LEN],
+    loaded_kdf: &crate::models::KdfParameters,
+) -> Result<(), String> {
+    if &active.salt != loaded_salt
+        || &active.kdf != loaded_kdf
+        || active.key.iter().ne(loaded_key.iter())
+    {
+        return Err(
+            "Vault metadata no longer matches the active key; lock and unlock the vault before retrying"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_recovery_reset_phrase(confirmation_phrase: &str) -> Result<(), String> {
@@ -375,7 +393,7 @@ pub(crate) async fn import_backup(
     let (key, salt, kdf, mut data) = load_vault(&backup_path, password.as_str())
         .map_err(|error| format!("Could not restore backup: {error}"))?;
     initialize_legacy_password_age_tracking(&mut data.entries, current_time_millis()?);
-    let snapshot = VaultSnapshot::from_data(&data);
+    let snapshot = VaultSnapshot::from_data(&data, &kdf);
     mutate_vault(
         &state,
         |candidate| {
@@ -424,6 +442,39 @@ pub(crate) fn change_master_password(
     persist(&path, &candidate)?;
     commit_vault_mutation(&state, expected_revision, candidate)?;
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn upgrade_kdf(
+    current_password: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<VaultSnapshot, String> {
+    let current_password = Zeroizing::new(current_password);
+    let path = vault_path(&app)?;
+    let _mutation_guard = lock_mutations(&state)?;
+    let (expected_revision, mut candidate) = begin_vault_mutation(&state)?;
+    if !kdf_upgrade_available(&candidate.kdf) {
+        return Err("Vault security parameters are already current".into());
+    }
+    let (loaded_key, loaded_salt, loaded_kdf, _) =
+        load_vault(&path, current_password.as_str())
+            .map_err(|_| "Current master password is incorrect".to_string())?;
+    ensure_loaded_vault_matches_active(
+        &candidate,
+        loaded_key.as_ref(),
+        &loaded_salt,
+        &loaded_kdf,
+    )?;
+    let salt = fresh_salt();
+    let key = derive_key(current_password.as_str(), &salt)?;
+    candidate.key = key;
+    candidate.salt = salt;
+    candidate.kdf = CURRENT_KDF;
+    persist(&path, &candidate)?;
+    let snapshot = VaultSnapshot::from_vault(&candidate);
+    commit_vault_mutation(&state, expected_revision, candidate)?;
+    Ok(snapshot)
 }
 
 #[derive(Serialize)]
@@ -814,6 +865,22 @@ mod tests {
         state
     }
 
+    fn persisted_smoke_state(path: &PathBuf, password: &str, entries: Vec<Entry>) -> AppState {
+        let salt = fresh_salt();
+        let key = derive_key(password, &salt).unwrap();
+        write_vault(path, &salt, &key, &entries).unwrap();
+        let state = AppState::default();
+        *state.vault.lock().unwrap() = Some(UnlockedVault {
+            revision: 0,
+            key,
+            salt,
+            kdf: CURRENT_KDF,
+            entries,
+            preferences: VaultPreferences::default(),
+        });
+        state
+    }
+
     #[test]
     fn backup_paths_require_the_passman_extension() {
         assert!(is_passman_backup_path(Path::new("vault.passman")));
@@ -847,6 +914,183 @@ mod tests {
         assert!(verify_current_master_password(&path, "current secure password").is_ok());
         assert!(verify_current_master_password(&path, "wrong password").is_err());
         remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn smoke_journey_create_save_lock_unlock_and_read() {
+        let directory = persistence_test_directory("smoke-create-unlock");
+        let path = directory.join(VAULT_FILE);
+        let password = "initial master password";
+        let state = persisted_smoke_state(&path, password, Vec::new());
+        let mut entry = persistence_test_entry("stored secret");
+        entry.updated_at = 0;
+        entry.password_changed_at = 0;
+        entry.password_strength_score = evaluate_password_strength(&entry).unwrap();
+        let now = current_time_millis().unwrap();
+
+        persist_vault_mutation(&state, &path, |vault| {
+            update_entry_timestamps(&mut entry, None, now);
+            vault.entries.push(entry);
+            Ok(())
+        })
+        .unwrap();
+        *state.vault.lock().unwrap() = None;
+        assert!(with_vault(&state, |_| Ok(())).is_err());
+
+        let (key, salt, kdf, data) = load_vault(&path, password).unwrap();
+        *state.vault.lock().unwrap() = Some(UnlockedVault {
+            revision: 0,
+            key,
+            salt,
+            kdf,
+            entries: data.entries,
+            preferences: data.preferences,
+        });
+        let stored_password = with_vault(&state, |vault| {
+            vault
+                .entries
+                .iter()
+                .find(|candidate| candidate.id == "persistence-entry")
+                .map(|candidate| candidate.password.clone())
+                .ok_or_else(|| "Password entry not found".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(stored_password, "stored secret");
+        remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn smoke_journey_export_change_restore_and_recover_entries() {
+        let directory = persistence_test_directory("smoke-backup-restore");
+        let active_path = directory.join(VAULT_FILE);
+        let backup_path = directory.join("smoke.passman");
+        let password = "initial master password";
+        let state = persisted_smoke_state(
+            &active_path,
+            password,
+            vec![persistence_test_entry("recoverable secret")],
+        );
+
+        let exported = with_vault(&state, |vault| Ok(vault.clone())).unwrap();
+        write_vault_with_kdf(
+            &backup_path,
+            &exported.salt,
+            &exported.key,
+            &exported.kdf,
+            &exported.entries,
+            &exported.preferences,
+        )
+        .unwrap();
+        persist_vault_mutation(&state, &active_path, |vault| {
+            vault.entries[0].password = "changed secret".into();
+            Ok(())
+        })
+        .unwrap();
+
+        let (key, salt, kdf, data) = load_vault(&backup_path, password).unwrap();
+        mutate_vault(
+            &state,
+            |candidate| persist(&active_path, candidate),
+            move |candidate| {
+                candidate.key = key;
+                candidate.salt = salt;
+                candidate.kdf = kdf;
+                candidate.entries = data.entries;
+                candidate.preferences = data.preferences;
+                Ok(())
+            },
+        )
+        .unwrap();
+        let (_, _, _, restored) = load_vault(&active_path, password).unwrap();
+
+        assert_eq!(restored.entries[0].password, "recoverable secret");
+        remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn smoke_journey_master_password_change_rejects_old_and_accepts_new() {
+        let directory = persistence_test_directory("smoke-password-change");
+        let path = directory.join(VAULT_FILE);
+        let current_password = "initial master password";
+        let new_password = "replacement master password";
+        let state = persisted_smoke_state(
+            &path,
+            current_password,
+            vec![persistence_test_entry("preserved secret")],
+        );
+
+        let (expected_revision, mut candidate) = begin_vault_mutation(&state).unwrap();
+        let (_, _, _, data) = load_vault(&path, current_password).unwrap();
+        let salt = fresh_salt();
+        let key = derive_key(new_password, &salt).unwrap();
+        candidate.key = key;
+        candidate.salt = salt;
+        candidate.kdf = CURRENT_KDF;
+        candidate.entries = data.entries;
+        candidate.preferences = data.preferences;
+        persist(&path, &candidate).unwrap();
+        commit_vault_mutation(&state, expected_revision, candidate).unwrap();
+        *state.vault.lock().unwrap() = None;
+
+        assert!(load_vault(&path, current_password).is_err());
+        let (_, _, _, unlocked) = load_vault(&path, new_password).unwrap();
+        assert_eq!(unlocked.entries[0].password, "preserved secret");
+        remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn smoke_journey_reset_rejects_wrong_confirmation_then_removes_vault() {
+        let directory = persistence_test_directory("smoke-reset");
+        let path = directory.join(VAULT_FILE);
+        let state = persisted_smoke_state(&path, "initial master password", Vec::new());
+
+        assert!(validate_recovery_reset_phrase("reset vault").is_err());
+        assert!(path.exists());
+        validate_recovery_reset_phrase(RECOVERY_RESET_PHRASE).unwrap();
+        remove_vault_and_clear_state(&path, &state).unwrap();
+
+        assert!(!path.exists());
+        assert!(state.vault.lock().unwrap().is_none());
+        remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn kdf_upgrade_rejects_metadata_or_key_that_differs_from_active_state() {
+        let state = mutation_test_state();
+        let guard = state.vault.lock().unwrap();
+        let active = guard.as_ref().unwrap();
+        assert!(
+            ensure_loaded_vault_matches_active(
+                active,
+                active.key.as_ref(),
+                &active.salt,
+                &active.kdf,
+            )
+            .is_ok()
+        );
+
+        let different_key = [9_u8; KEY_LEN];
+        assert!(
+            ensure_loaded_vault_matches_active(
+                active,
+                &different_key,
+                &active.salt,
+                &active.kdf,
+            )
+            .is_err()
+        );
+        let mut different_kdf = active.kdf;
+        different_kdf.iterations += 1;
+        assert!(
+            ensure_loaded_vault_matches_active(
+                active,
+                active.key.as_ref(),
+                &active.salt,
+                &different_kdf,
+            )
+            .is_err()
+        );
     }
 
     #[test]

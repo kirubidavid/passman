@@ -6,6 +6,7 @@ const vaultApi = vi.hoisted(() => ({
   getTotpCode: vi.fn(),
   importBackup: vi.fn(),
   setPreferences: vi.fn(),
+  upgradeKdf: vi.fn(),
 }));
 vi.mock("../../src/vault-api", () => ({ vaultApi }));
 vi.mock("../../src/clipboard", () => ({ copyText: vi.fn() }));
@@ -42,6 +43,7 @@ describe("modal cleanup", () => {
         duplicatePassword: false,
       },
     ];
+    state.securityUpgradeAvailable = false;
     vaultApi.getTotpCode.mockResolvedValue({
       code: "123456",
       secondsRemaining: 20,
@@ -227,5 +229,29 @@ describe("modal cleanup", () => {
       ),
     );
     expect(completeVaultReset).toHaveBeenCalledWith("final.passman");
+  });
+
+  it("requires the master password before upgrading KDF parameters", async () => {
+    state.securityUpgradeAvailable = true;
+    vaultApi.upgradeKdf.mockResolvedValue({
+      entries: state.entries,
+      preferences: { passwordAgeLimitDays: 90 },
+      securityUpgradeAvailable: false,
+    });
+    openVaultSettings();
+    document.querySelector<HTMLButtonElement>("#upgrade-kdf")?.click();
+    const password =
+      document.querySelector<HTMLInputElement>("#kdf-upgrade-password");
+    if (!password) throw new Error("KDF upgrade password input was not rendered");
+    password.value = "current password";
+
+    document
+      .querySelector<HTMLFormElement>("#kdf-upgrade-form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(vaultApi.upgradeKdf).toHaveBeenCalledWith("current password"),
+    );
+    expect(state.securityUpgradeAvailable).toBe(false);
   });
 });

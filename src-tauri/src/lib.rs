@@ -19,6 +19,7 @@ pub fn run() {
             commands::export_backup,
             commands::import_backup,
             commands::change_master_password,
+            commands::upgrade_kdf,
             commands::authenticated_reset_vault,
             commands::recovery_reset_vault,
             commands::list_entries,
