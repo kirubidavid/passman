@@ -22,6 +22,7 @@ use data_encoding::BASE32_NOPAD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use tauri::Manager;
 #[cfg(test)]
 use std::{
     io,
