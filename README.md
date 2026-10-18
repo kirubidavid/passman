@@ -10,8 +10,10 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Track password age independently from other entry edits, with green, yellow, and red indicators based on a configurable global limit that defaults to 90 days.
 - Review password health with Rust-only exact duplicate detection, offline zxcvbn strength scoring, issue counts, clear text labels, and urgency sorting. Password values are not included in frontend summaries.
 - Store an optional authenticator setup key with an entry, then generate standards-based six-digit TOTP codes that refresh every 30 seconds.
-- Export and restore portable encrypted backups without exposing decrypted vault contents to the frontend.
+- Export and restore portable encrypted backups through native save/open dialogs without exposing decrypted vault contents or backup file contents to the frontend.
 - Change the master password by verifying the current password and re-encrypting the vault with a fresh random salt.
+- Reset an unlocked vault only after Rust verifies the current master password, with an option to create one final encrypted backup first.
+- Recover from a forgotten master password through a separate destructive reset that requires typing `RESET VAULT`, which Rust verifies again before deletion.
 - Encrypt the vault with XChaCha20-Poly1305; derive a 256-bit key using Argon2id with a random salt.
 - Decrypted vault data and the key are held in application memory only while unlocked. The configurable auto-lock timeout defaults to five minutes and is checked again after window focus, visibility, suspend/resume, and supported workstation-lock transitions.
 - Copied passwords are cleared from the clipboard after 30 seconds when clipboard read-back is permitted.
@@ -56,20 +58,24 @@ The Rust entrypoint in `src-tauri/src/lib.rs` only assembles Tauri state and com
 - `crypto.rs` owns Argon2id derivation and XChaCha20-Poly1305 sealing/opening.
 - `persistence.rs` owns vault paths, atomic writes, and encrypted-file loading.
 - `totp.rs` owns Base32 secret handling and TOTP generation.
-- `commands.rs` validates command input and coordinates the other backend modules.
+- `commands.rs` validates command input, coordinates the other backend modules, and applies persisted mutations through revision-checked transactions.
 
 ## Vault storage
 
 The vault is kept in the operating system's per-user application data directory, in a file named `vault.json`. Its salt, nonce, and ciphertext are base64-encoded; saved entries and vault preferences are authenticated ciphertext. The password-age limit travels with the encrypted vault and its backups, while auto-lock remains a device-specific setting in local application storage. Older vaults whose encrypted payload contains only an entry array load with the default 90-day password-age limit and migrate to the structured payload on their next save. Version 2 vault envelopes also record the key-derivation algorithm, Argon2 version, memory cost, iteration count, parallelism, and output length. This lets supported Argon2id parameter sets coexist and allows future parameter upgrades without making older vaults unreadable. Version 1 vaults remain compatible through their original fixed Argon2id settings, and imported parameters are bounded before key derivation to prevent excessive resource use. Every save uses a fresh random XChaCha20-Poly1305 nonce. The temporary write file is atomically renamed after serialization.
 
+Vault mutations clone the unlocked snapshot while briefly holding the state mutex, then release it before encryption and atomic disk persistence. A dedicated mutation gate orders writers, and an in-memory revision counter must still match before the persisted candidate becomes the active state. Failed persistence and stale candidates leave the active in-memory vault unchanged.
+
 ## Backups and master-password changes
 
-Open **Vault settings** from the sidebar to export a `.passman` backup to the operating system's Downloads folder, restore an exported backup, or change the master password.
+Open **Vault settings** from the sidebar to export a `.passman` backup to a destination you choose, restore an exported backup, or change the master password. Native dialogs filter for `.passman` files, and the save dialog warns before replacing an existing backup.
 
 - An exported backup is a newly encrypted snapshot containing the vault salt, a fresh nonce, and authenticated ciphertext for entries and vault preferences. Decrypted entries and keys are never sent to the frontend or written to the backup.
 - A backup remains protected by the master password that was active when it was exported. Changing the current vault's master password does not change existing backup passwords.
-- Restoring requires the backup's master password. The frontend reads only the encrypted backup envelope; Passman decrypts and validates it in Rust before replacing the active vault, then writes the restored data with a fresh nonce.
+- Restoring requires the backup's master password. Rust opens and size-checks the selected backup directly before reading, decrypting, and validating it; backup bytes never pass through JavaScript. The active vault is replaced only after validation, then written with a fresh nonce.
 - Changing the master password verifies the current password, generates a fresh random salt, derives a new key, and re-encrypts the vault. The previous master password no longer unlocks the active vault.
+- Resetting from Vault Settings verifies the current master password in Rust. The final-backup option is enabled by default; cancelling or failing that backup leaves the vault intact.
+- If the master password is forgotten, the lock screen offers a separate recovery reset. It cannot create a usable new backup because the vault cannot be decrypted, and Rust requires the exact phrase `RESET VAULT` before deletion.
 
 Keep backup files in a separate, access-controlled location. Their security still depends on the strength of the master password that protects them.
 
@@ -78,7 +84,7 @@ Keep backup files in a separate, access-controlled location. Their security stil
 See [SECURITY.md](SECURITY.md) for security best practices, backup guidance, and vulnerability reporting notes.
 
 - This is an MVP for one local vault. It has no sync, browser integration, or multi-user support.
-- The master password is not stored and cannot be recovered. If forgotten, use the in-app reset option to delete the vault and start over; existing entries cannot be recovered.
+- The master password is not stored and cannot be recovered. If forgotten, use the recovery reset option to delete the vault and start over; existing entries cannot be recovered. Recovery reset cannot produce a new backup, so retain previously exported backups.
 - Use a strong, unique master password. A local attacker with a copy of the vault can attempt offline guesses; Argon2id makes guesses more expensive but does not make weak passwords safe.
 - This app has not undergone an independent security audit. Lock your vault when leaving the device unattended, and keep encrypted backups in a separate location if you need recovery from device loss. Backups remain protected only as strongly as their master passwords.
 - Clipboard clearing is best-effort because desktop clipboard permissions and clipboard managers vary. Other applications may also retain copied content.

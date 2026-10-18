@@ -24,7 +24,7 @@ use data_encoding::BASE32_NOPAD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 #[cfg(test)]
 use std::{
     io,
@@ -32,18 +32,162 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-fn with_vault<T>(
+const BACKUP_EXTENSION: &str = "passman";
+const RECOVERY_RESET_PHRASE: &str = "RESET VAULT";
+
+fn is_passman_backup_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(BACKUP_EXTENSION))
+}
+
+fn local_backup_path(
+    selected: tauri_plugin_dialog::FilePath,
+) -> Result<std::path::PathBuf, String> {
+    let path = selected
+        .into_path()
+        .map_err(|_| "The selected backup is not a local file".to_string())?;
+    if !is_passman_backup_path(&path) {
+        return Err("Choose a file with the .passman extension".into());
+    }
+    Ok(path)
+}
+
+fn suggested_backup_name() -> Result<String, String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch".to_string())?
+        .as_secs();
+    Ok(format!(
+        "passman-backup-{timestamp}-{:08x}.passman",
+        OsRng.next_u32()
+    ))
+}
+
+async fn choose_backup_destination(
+    app: &tauri::AppHandle,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let suggested_name = suggested_backup_name()?;
+    let dialog_app = app.clone();
+    let destination = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .add_filter("Passman encrypted backups", &[BACKUP_EXTENSION])
+            .set_file_name(suggested_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|error| format!("Could not open the backup save dialog: {error}"))?;
+    destination.map(local_backup_path).transpose()
+}
+
+fn verify_current_master_password(
+    path: &std::path::PathBuf,
+    password: &str,
+) -> Result<(), String> {
+    load_vault(path, password)
+        .map(|_| ())
+        .map_err(|_| "Current master password is incorrect".to_string())
+}
+
+fn validate_recovery_reset_phrase(confirmation_phrase: &str) -> Result<(), String> {
+    if confirmation_phrase != RECOVERY_RESET_PHRASE {
+        return Err(format!(
+            "Type {RECOVERY_RESET_PHRASE} exactly to reset the vault"
+        ));
+    }
+    Ok(())
+}
+
+fn remove_vault_and_clear_state(
+    path: &std::path::PathBuf,
     state: &AppState,
-    f: impl FnOnce(&mut UnlockedVault) -> Result<T, String>,
-) -> Result<T, String> {
+) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| format!("Could not remove vault: {error}"))?;
+    }
     let mut guard = state
         .vault
         .lock()
         .map_err(|_| "Vault is unavailable".to_string())?;
+    *guard = None;
+    Ok(())
+}
+
+fn with_vault<T>(
+    state: &AppState,
+    f: impl FnOnce(&UnlockedVault) -> Result<T, String>,
+) -> Result<T, String> {
+    let guard = state
+        .vault
+        .lock()
+        .map_err(|_| "Vault is unavailable".to_string())?;
     let vault = guard
-        .as_mut()
+        .as_ref()
         .ok_or_else(|| "Unlock your vault first".to_string())?;
     f(vault)
+}
+
+fn lock_mutations(state: &AppState) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+    state
+        .mutation
+        .lock()
+        .map_err(|_| "Vault mutations are unavailable".to_string())
+}
+
+fn begin_vault_mutation(state: &AppState) -> Result<(u64, UnlockedVault), String> {
+    let guard = state
+        .vault
+        .lock()
+        .map_err(|_| "Vault is unavailable".to_string())?;
+    let vault = guard
+        .as_ref()
+        .ok_or_else(|| "Unlock your vault first".to_string())?;
+    Ok((vault.revision, vault.clone()))
+}
+
+fn commit_vault_mutation(
+    state: &AppState,
+    expected_revision: u64,
+    mut candidate: UnlockedVault,
+) -> Result<(), String> {
+    let mut guard = state
+        .vault
+        .lock()
+        .map_err(|_| "Vault is unavailable".to_string())?;
+    let current = guard
+        .as_ref()
+        .ok_or_else(|| "Vault was locked while saving changes".to_string())?;
+    if current.revision != expected_revision {
+        return Err("Vault changed while saving; retry the operation".into());
+    }
+    candidate.revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| "Vault revision limit reached".to_string())?;
+    *guard = Some(candidate);
+    Ok(())
+}
+
+fn mutate_vault<T>(
+    state: &AppState,
+    persist_candidate: impl FnOnce(&UnlockedVault) -> Result<(), String>,
+    mutation: impl FnOnce(&mut UnlockedVault) -> Result<T, String>,
+) -> Result<T, String> {
+    let _mutation_guard = lock_mutations(state)?;
+    let (expected_revision, mut candidate) = begin_vault_mutation(state)?;
+    let result = mutation(&mut candidate)?;
+    persist_candidate(&candidate)?;
+    commit_vault_mutation(state, expected_revision, candidate)?;
+    Ok(result)
+}
+
+fn persist_vault_mutation<T>(
+    state: &AppState,
+    path: &std::path::PathBuf,
+    mutation: impl FnOnce(&mut UnlockedVault) -> Result<T, String>,
+) -> Result<T, String> {
+    mutate_vault(state, |candidate| persist(path, candidate), mutation)
 }
 
 fn update_entry_timestamps(entry: &mut Entry, previous: Option<&Entry>, now: u64) {
@@ -98,6 +242,7 @@ pub(crate) fn create_vault(
         return Err("Choose a master password with at least 12 characters".into());
     }
     let path = vault_path(&app)?;
+    let _mutation_guard = lock_mutations(&state)?;
     if path.exists() {
         return Err("A vault already exists".into());
     }
@@ -111,6 +256,7 @@ pub(crate) fn create_vault(
         .lock()
         .map_err(|_| "Vault is unavailable".to_string())?;
     *guard = Some(UnlockedVault {
+        revision: 0,
         key,
         salt,
         kdf: CURRENT_KDF,
@@ -128,6 +274,7 @@ pub(crate) fn unlock_vault(
 ) -> Result<VaultPreferences, String> {
     let password = Zeroizing::new(password);
     let path = vault_path(&app)?;
+    let _mutation_guard = lock_mutations(&state)?;
     let (key, salt, kdf, data) = load_vault(&path, password.as_str())?;
     let preferences = data.preferences;
     let mut guard = state
@@ -135,6 +282,7 @@ pub(crate) fn unlock_vault(
         .lock()
         .map_err(|_| "Vault is unavailable".to_string())?;
     *guard = Some(UnlockedVault {
+        revision: 0,
         key,
         salt,
         kdf,
@@ -146,6 +294,7 @@ pub(crate) fn unlock_vault(
 
 #[tauri::command]
 pub(crate) fn lock_vault(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let _mutation_guard = lock_mutations(&state)?;
     let mut guard = state
         .vault
         .lock()
@@ -155,76 +304,73 @@ pub(crate) fn lock_vault(state: tauri::State<'_, AppState>) -> Result<(), String
 }
 
 #[tauri::command]
-pub(crate) fn export_backup(
+pub(crate) async fn export_backup(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
-    let directory = app
-        .path()
-        .download_dir()
-        .map_err(|e| format!("Could not locate the Downloads folder: {e}"))?;
-    fs::create_dir_all(&directory)
-        .map_err(|e| format!("Could not prepare the Downloads folder: {e}"))?;
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "System clock is before the Unix epoch".to_string())?
-        .as_secs();
-    let filename = format!(
-        "passman-backup-{timestamp}-{:08x}.passman",
-        OsRng.next_u32()
-    );
-    let destination = directory.join(&filename);
-    with_vault(&state, |vault| {
-        write_vault_with_kdf(
-            &destination,
-            &vault.salt,
-            &vault.key,
-            &vault.kdf,
-            &vault.entries,
-            &vault.preferences,
-        )
-            .map_err(|error| format!("Could not export backup: {error}"))?;
-        Ok(filename)
-    })
+) -> Result<Option<String>, String> {
+    let destination = choose_backup_destination(&app).await?;
+    let Some(destination) = destination else {
+        return Ok(None);
+    };
+    let filename = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "The selected backup file name is invalid".to_string())?
+        .to_string();
+    let vault = with_vault(&state, |vault| Ok(vault.clone()))?;
+    write_vault_with_kdf(
+        &destination,
+        &vault.salt,
+        &vault.key,
+        &vault.kdf,
+        &vault.entries,
+        &vault.preferences,
+    )
+    .map_err(|error| format!("Could not export backup: {error}"))?;
+    Ok(Some(filename))
 }
 
 #[tauri::command]
-pub(crate) fn import_backup(
-    backup: String,
+pub(crate) async fn import_backup(
     password: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<VaultSnapshot, String> {
+) -> Result<Option<VaultSnapshot>, String> {
     let active_path = vault_path(&app)?;
-    let backup = Zeroizing::new(backup);
     let password = Zeroizing::new(password);
-    let mut guard = state
-        .vault
-        .lock()
-        .map_err(|_| "Vault is unavailable".to_string())?;
-    if guard.is_none() {
-        return Err("Unlock your vault before restoring a backup".into());
-    }
-    let (key, salt, kdf, data) = load_vault_data(backup.as_bytes(), password.as_str())
-        .map_err(|error| format!("Could not restore backup: {error}"))?;
-    write_vault_with_kdf(
-        &active_path,
-        &salt,
-        &key,
-        &kdf,
-        &data.entries,
-        &data.preferences,
-    )
+    let dialog_app = app.clone();
+    let selected_backup = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .add_filter("Passman encrypted backups", &[BACKUP_EXTENSION])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|error| format!("Could not open the backup file dialog: {error}"))?;
+    let Some(selected_backup) = selected_backup else {
+        return Ok(None);
+    };
+    let backup_path = local_backup_path(selected_backup)?;
+    let (key, salt, kdf, data) = load_vault(&backup_path, password.as_str())
         .map_err(|error| format!("Could not restore backup: {error}"))?;
     let snapshot = VaultSnapshot::from_data(&data);
-    *guard = Some(UnlockedVault {
-        key,
-        salt,
-        kdf,
-        entries: data.entries,
-        preferences: data.preferences,
-    });
-    Ok(snapshot)
+    mutate_vault(
+        &state,
+        |candidate| {
+            persist(&active_path, candidate)
+                .map_err(|error| format!("Could not restore backup: {error}"))
+        },
+        move |candidate| {
+            candidate.key = key;
+            candidate.salt = salt;
+            candidate.kdf = kdf;
+            candidate.entries = data.entries;
+            candidate.preferences = data.preferences;
+            Ok(())
+        },
+    )?;
+    Ok(Some(snapshot))
 }
 
 #[tauri::command]
@@ -243,50 +389,88 @@ pub(crate) fn change_master_password(
         return Err("Choose a new master password that is different from the current one".into());
     }
     let path = vault_path(&app)?;
-    let mut guard = state
-        .vault
-        .lock()
-        .map_err(|_| "Vault is unavailable".to_string())?;
-    if guard.is_none() {
-        return Err("Unlock your vault before changing its master password".into());
-    }
+    let _mutation_guard = lock_mutations(&state)?;
+    let (expected_revision, mut candidate) = begin_vault_mutation(&state)?;
     let (_, _, _, data) = load_vault(&path, current_password.as_str())
         .map_err(|_| "Current master password is incorrect".to_string())?;
     let salt = fresh_salt();
     let key = derive_key(new_password.as_str(), &salt)?;
-    write_vault_with_kdf(
-        &path,
-        &salt,
-        &key,
-        &CURRENT_KDF,
-        &data.entries,
-        &data.preferences,
-    )?;
-    *guard = Some(UnlockedVault {
-        key,
-        salt,
-        kdf: CURRENT_KDF,
-        entries: data.entries,
-        preferences: data.preferences,
-    });
+    candidate.key = key;
+    candidate.salt = salt;
+    candidate.kdf = CURRENT_KDF;
+    candidate.entries = data.entries;
+    candidate.preferences = data.preferences;
+    persist(&path, &candidate)?;
+    commit_vault_mutation(&state, expected_revision, candidate)?;
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResetResult {
+    reset: bool,
+    backup_file_name: Option<String>,
+}
+
 #[tauri::command]
-pub(crate) fn reset_vault(
+pub(crate) async fn authenticated_reset_vault(
+    current_password: String,
+    create_backup: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<ResetResult, String> {
+    let path = vault_path(&app)?;
+    let current_password = Zeroizing::new(current_password);
+    verify_current_master_password(&path, current_password.as_str())?;
+    let backup_destination = if create_backup {
+        let Some(destination) = choose_backup_destination(&app).await? else {
+            return Ok(ResetResult {
+                reset: false,
+                backup_file_name: None,
+            });
+        };
+        Some(destination)
+    } else {
+        None
+    };
+    let _mutation_guard = lock_mutations(&state)?;
+    let (_, candidate) = begin_vault_mutation(&state)?;
+    let backup_file_name = if let Some(destination) = backup_destination {
+        let filename = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "The selected backup file name is invalid".to_string())?
+            .to_string();
+        write_vault_with_kdf(
+            &destination,
+            &candidate.salt,
+            &candidate.key,
+            &candidate.kdf,
+            &candidate.entries,
+            &candidate.preferences,
+        )
+        .map_err(|error| format!("Could not create final backup: {error}"))?;
+        Some(filename)
+    } else {
+        None
+    };
+    remove_vault_and_clear_state(&path, &state)?;
+    Ok(ResetResult {
+        reset: true,
+        backup_file_name,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn recovery_reset_vault(
+    confirmation_phrase: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    validate_recovery_reset_phrase(&confirmation_phrase)?;
     let path = vault_path(&app)?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| format!("Could not remove vault: {e}"))?;
-    }
-    let mut guard = state
-        .vault
-        .lock()
-        .map_err(|_| "Vault is unavailable".to_string())?;
-    *guard = None;
-    Ok(())
+    let _mutation_guard = lock_mutations(&state)?;
+    remove_vault_and_clear_state(&path, &state)
 }
 
 #[tauri::command]
@@ -304,13 +488,8 @@ pub(crate) fn set_vault_preferences(
 ) -> Result<VaultPreferences, String> {
     let preferences = preferences.validate()?;
     let path = vault_path(&app)?;
-    with_vault(&state, |vault| {
-        let previous = vault.preferences;
+    persist_vault_mutation(&state, &path, |vault| {
         vault.preferences = preferences;
-        if let Err(error) = persist(&path, vault) {
-            vault.preferences = previous;
-            return Err(error);
-        }
         Ok(vault.preferences)
     })
 }
@@ -401,19 +580,13 @@ pub(crate) fn set_totp_secret(
         return Err("Authenticator secret has invalid Base32 padding".into());
     }
     let path = vault_path(&app)?;
-    with_vault(&state, |vault| {
+    persist_vault_mutation(&state, &path, |vault| {
         let index = vault
             .entries
             .iter()
             .position(|entry| entry.id == id)
             .ok_or_else(|| "Password entry not found".to_string())?;
-        let previous = vault.entries[index]
-            .totp_secret
-            .replace(canonical.to_string());
-        if let Err(error) = persist(&path, vault) {
-            vault.entries[index].totp_secret = previous;
-            return Err(error);
-        }
+        let previous = vault.entries[index].totp_secret.replace(canonical.to_string());
         if let Some(mut previous) = previous {
             previous.zeroize();
         }
@@ -428,17 +601,13 @@ pub(crate) fn remove_totp_secret(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<EntrySummary>, String> {
     let path = vault_path(&app)?;
-    with_vault(&state, |vault| {
+    persist_vault_mutation(&state, &path, |vault| {
         let index = vault
             .entries
             .iter()
             .position(|entry| entry.id == id)
             .ok_or_else(|| "Password entry not found".to_string())?;
         let previous = vault.entries[index].totp_secret.take();
-        if let Err(error) = persist(&path, vault) {
-            vault.entries[index].totp_secret = previous;
-            return Err(error);
-        }
         if let Some(mut previous) = previous {
             previous.zeroize();
         }
@@ -481,8 +650,7 @@ pub(crate) fn save_entry(
         .try_into()
         .map_err(|_| "System time is outside the supported range".to_string())?;
     let path = vault_path(&app)?;
-    with_vault(&state, |vault| {
-        let original_entries = vault.entries.clone();
+    persist_vault_mutation(&state, &path, |vault| {
         if let Some(index) = vault.entries.iter().position(|e| e.id == entry.id) {
             update_entry_timestamps(&mut entry, Some(&vault.entries[index]), now);
             let stored_totp = vault.entries[index].totp_secret.take();
@@ -500,13 +668,6 @@ pub(crate) fn save_entry(
             update_entry_timestamps(&mut entry, None, now);
             vault.entries.push(entry);
         }
-        if let Err(error) = persist(&path, vault) {
-            vault.entries = original_entries;
-            return Err(error);
-        }
-        for mut previous in original_entries {
-            previous.zeroize();
-        }
         Ok(summarize_entries(&vault.entries))
     })
 }
@@ -518,16 +679,8 @@ pub(crate) fn delete_entry(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<EntrySummary>, String> {
     let path = vault_path(&app)?;
-    with_vault(&state, |vault| {
-        let original_entries = vault.entries.clone();
+    persist_vault_mutation(&state, &path, |vault| {
         vault.entries.retain(|entry| entry.id != id);
-        if let Err(error) = persist(&path, vault) {
-            vault.entries = original_entries;
-            return Err(error);
-        }
-        for mut previous in original_entries {
-            previous.zeroize();
-        }
         Ok(summarize_entries(&vault.entries))
     })
 }
@@ -629,6 +782,129 @@ mod tests {
             password_changed_at: 1,
             password_strength_score: u8::MAX,
         }
+    }
+
+    fn mutation_test_state() -> AppState {
+        let state = AppState::default();
+        *state.vault.lock().unwrap() = Some(UnlockedVault {
+            revision: 0,
+            key: Zeroizing::new([7_u8; KEY_LEN]),
+            salt: [8_u8; crate::models::SALT_LEN],
+            kdf: CURRENT_KDF,
+            entries: vec![persistence_test_entry("original secret")],
+            preferences: VaultPreferences::default(),
+        });
+        state
+    }
+
+    #[test]
+    fn backup_paths_require_the_passman_extension() {
+        assert!(is_passman_backup_path(Path::new("vault.passman")));
+        assert!(is_passman_backup_path(Path::new("VAULT.PASSMAN")));
+        assert!(!is_passman_backup_path(Path::new("vault.json")));
+        assert!(!is_passman_backup_path(Path::new("vault")));
+    }
+
+    #[test]
+    fn recovery_reset_requires_the_exact_phrase() {
+        assert!(validate_recovery_reset_phrase(RECOVERY_RESET_PHRASE).is_ok());
+        assert!(validate_recovery_reset_phrase("reset vault").is_err());
+        assert!(validate_recovery_reset_phrase("RESET VAULT ").is_err());
+        assert!(validate_recovery_reset_phrase("").is_err());
+    }
+
+    #[test]
+    fn authenticated_reset_password_is_verified_against_the_encrypted_vault() {
+        let directory = persistence_test_directory("reset-password");
+        let path = directory.join(VAULT_FILE);
+        let salt = fresh_salt();
+        let key = derive_key("current secure password", &salt).unwrap();
+        write_vault(
+            &path,
+            &salt,
+            &key,
+            &[persistence_test_entry("stored secret")],
+        )
+        .unwrap();
+
+        assert!(verify_current_master_password(&path, "current secure password").is_ok());
+        assert!(verify_current_master_password(&path, "wrong password").is_err());
+        remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn vault_mutation_releases_state_lock_during_persistence_and_increments_revision() {
+        let state = mutation_test_state();
+
+        let result = mutate_vault(
+            &state,
+            |_| {
+                assert!(state.vault.try_lock().is_ok());
+                Ok(())
+            },
+            |candidate| {
+                candidate.preferences.password_age_limit_days = 120;
+                Ok("saved")
+            },
+        )
+        .unwrap();
+
+        let guard = state.vault.lock().unwrap();
+        let vault = guard.as_ref().unwrap();
+        assert_eq!(result, "saved");
+        assert_eq!(vault.revision, 1);
+        assert_eq!(vault.preferences.password_age_limit_days, 120);
+    }
+
+    #[test]
+    fn failed_persistence_does_not_commit_candidate_state() {
+        let state = mutation_test_state();
+
+        let error = mutate_vault(
+            &state,
+            |_| Err("simulated persistence failure".into()),
+            |candidate| {
+                candidate.preferences.password_age_limit_days = 120;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        let guard = state.vault.lock().unwrap();
+        let vault = guard.as_ref().unwrap();
+        assert_eq!(error, "simulated persistence failure");
+        assert_eq!(vault.revision, 0);
+        assert_eq!(
+            vault.preferences.password_age_limit_days,
+            crate::models::DEFAULT_PASSWORD_AGE_LIMIT_DAYS
+        );
+    }
+
+    #[test]
+    fn stale_vault_mutation_is_rejected_without_replacing_active_state() {
+        let state = mutation_test_state();
+
+        let error = mutate_vault(
+            &state,
+            |_| {
+                state.vault.lock().unwrap().as_mut().unwrap().revision += 1;
+                Ok(())
+            },
+            |candidate| {
+                candidate.preferences.password_age_limit_days = 120;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        let guard = state.vault.lock().unwrap();
+        let vault = guard.as_ref().unwrap();
+        assert_eq!(error, "Vault changed while saving; retry the operation");
+        assert_eq!(vault.revision, 1);
+        assert_eq!(
+            vault.preferences.password_age_limit_days,
+            crate::models::DEFAULT_PASSWORD_AGE_LIMIT_DAYS
+        );
     }
 
     #[test]

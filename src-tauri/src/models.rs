@@ -265,6 +265,7 @@ pub(crate) fn entry_details(entries: &[Entry], entry: &Entry) -> EntryDetails {
 #[derive(Default)]
 pub(crate) struct AppState {
     pub(crate) vault: Mutex<Option<UnlockedVault>>,
+    pub(crate) mutation: Mutex<()>,
 }
 
 impl Drop for AppState {
@@ -275,7 +276,9 @@ impl Drop for AppState {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct UnlockedVault {
+    pub(crate) revision: u64,
     pub(crate) key: Zeroizing<[u8; KEY_LEN]>,
     pub(crate) salt: [u8; SALT_LEN],
     pub(crate) kdf: KdfParameters,

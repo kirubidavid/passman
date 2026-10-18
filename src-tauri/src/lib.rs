@@ -9,6 +9,7 @@ use models::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::vault_status,
@@ -18,7 +19,8 @@ pub fn run() {
             commands::export_backup,
             commands::import_backup,
             commands::change_master_password,
-            commands::reset_vault,
+            commands::authenticated_reset_vault,
+            commands::recovery_reset_vault,
             commands::list_entries,
             commands::set_vault_preferences,
             commands::get_entry,

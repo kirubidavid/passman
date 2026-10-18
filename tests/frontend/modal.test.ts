@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const vaultApi = vi.hoisted(() => ({
+  authenticatedReset: vi.fn(),
+  exportBackup: vi.fn(),
   getTotpCode: vi.fn(),
+  importBackup: vi.fn(),
   setPreferences: vi.fn(),
 }));
 vi.mock("../../src/vault-api", () => ({ vaultApi }));
@@ -12,16 +15,19 @@ import {
   closeModal,
   configureModal,
   confirmAction,
+  confirmPhraseAction,
   openVaultSettings,
   showTotp,
 } from "../../src/modal";
 import { getPasswordAgeLimitDays, state } from "../../src/state";
 
 describe("modal cleanup", () => {
+  const completeVaultReset = vi.fn();
+
   beforeEach(() => {
     vi.useFakeTimers();
     document.body.innerHTML =
-      '<div id="modal-root"></div><div id="toast"></div>';
+      '<input id="search-input" /><div id="modal-root"></div><div id="toast"></div>';
     state.entries = [
       {
         id: "entry-1",
@@ -44,6 +50,7 @@ describe("modal cleanup", () => {
       setFilter: vi.fn(),
       renderEntries: vi.fn(),
       recordActivity: vi.fn(),
+      completeVaultReset,
     });
   });
 
@@ -125,6 +132,24 @@ describe("modal cleanup", () => {
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
+  it("returns the exact typed recovery phrase for Rust verification", async () => {
+    const confirmation = confirmPhraseAction({
+      title: "Recovery reset?",
+      description: "This deletes the encrypted vault.",
+      confirmLabel: "Recovery reset",
+      phrase: "RESET VAULT",
+    });
+    const input = document.querySelector<HTMLInputElement>(
+      ".confirmation-phrase input",
+    );
+    if (!input) throw new Error("Confirmation phrase input was not rendered");
+    input.value = "RESET VAULT";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>(".button-danger")?.click();
+
+    await expect(confirmation).resolves.toBe("RESET VAULT");
+  });
+
   it("persists password age preferences through the vault API", async () => {
     vaultApi.setPreferences.mockResolvedValue({
       passwordAgeLimitDays: 120,
@@ -144,5 +169,63 @@ describe("modal cleanup", () => {
       }),
     );
     expect(getPasswordAgeLimitDays()).toBe(120);
+  });
+
+  it("keeps settings open when the native export dialog is cancelled", async () => {
+    vaultApi.exportBackup.mockResolvedValue(null);
+    openVaultSettings();
+
+    document.querySelector<HTMLButtonElement>("#export-backup")?.click();
+
+    await vi.waitFor(() => expect(vaultApi.exportBackup).toHaveBeenCalledOnce());
+    expect(document.querySelector(".vault-settings-modal")).not.toBeNull();
+  });
+
+  it("restores through the Rust file picker without reading a browser File", async () => {
+    vaultApi.importBackup.mockResolvedValue({
+      entries: [],
+      preferences: { passwordAgeLimitDays: 90 },
+    });
+    openVaultSettings();
+    document.querySelector<HTMLButtonElement>("#restore-backup")?.click();
+
+    expect(document.querySelector('input[type="file"]')).toBeNull();
+    const password =
+      document.querySelector<HTMLInputElement>("#backup-password");
+    if (!password) throw new Error("Backup password input was not rendered");
+    password.value = "backup password";
+    document
+      .querySelector<HTMLFormElement>("#restore-form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.querySelector<HTMLButtonElement>(".button-danger")?.click();
+
+    await vi.waitFor(() =>
+      expect(vaultApi.importBackup).toHaveBeenCalledWith("backup password"),
+    );
+  });
+
+  it("requires the current password for reset and requests a final backup", async () => {
+    vaultApi.authenticatedReset.mockResolvedValue({
+      reset: true,
+      backupFileName: "final.passman",
+    });
+    openVaultSettings();
+    document.querySelector<HTMLButtonElement>("#authenticated-reset")?.click();
+    const password =
+      document.querySelector<HTMLInputElement>("#reset-master-password");
+    if (!password) throw new Error("Reset password input was not rendered");
+    password.value = "current password";
+
+    document
+      .querySelector<HTMLFormElement>("#authenticated-reset-form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(vaultApi.authenticatedReset).toHaveBeenCalledWith(
+        "current password",
+        true,
+      ),
+    );
+    expect(completeVaultReset).toHaveBeenCalledWith("final.passman");
   });
 });

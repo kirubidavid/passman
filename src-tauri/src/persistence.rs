@@ -20,6 +20,7 @@ use tauri::Manager;
 use zeroize::Zeroizing;
 
 const TEMP_FILE_ATTEMPTS: usize = 16;
+pub(crate) const MAX_VAULT_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -175,6 +176,14 @@ pub(crate) fn load_vault(
     ),
     String,
 > {
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("Could not inspect vault file: {e}"))?;
+    if !metadata.is_file() {
+        return Err("Vault path is not a file".into());
+    }
+    if metadata.len() > MAX_VAULT_FILE_SIZE {
+        return Err("Vault file is larger than the supported limit".into());
+    }
     let data = fs::read(path).map_err(|e| format!("Could not read vault: {e}"))?;
     load_vault_data(&data, password)
 }
@@ -191,7 +200,7 @@ pub(crate) fn load_vault_data(
     ),
     String,
 > {
-    if data.len() > 64 * 1024 * 1024 {
+    if data.len() as u64 > MAX_VAULT_FILE_SIZE {
         return Err("Vault file is larger than the supported limit".into());
     }
     let file: VaultFile =
@@ -272,6 +281,7 @@ mod tests {
         let salt = fresh_salt();
         let key = derive_key("persistence lifecycle password", &salt).unwrap();
         let mut vault = UnlockedVault {
+            revision: 0,
             key,
             salt,
             kdf: CURRENT_KDF,
@@ -327,6 +337,25 @@ mod tests {
             load_vault_data(missing_kdf, "irrelevant").unwrap_err(),
             "Vault KDF parameters are missing"
         );
+    }
+
+    #[test]
+    fn oversized_vault_is_rejected_before_reading_file_contents() {
+        let directory = test_directory("oversized");
+        let path = directory.join(VAULT_FILE);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(MAX_VAULT_FILE_SIZE + 1).unwrap();
+        drop(file);
+
+        assert_eq!(
+            load_vault(&path, "irrelevant").unwrap_err(),
+            "Vault file is larger than the supported limit"
+        );
+        remove_test_directory(&directory);
     }
 
     #[test]

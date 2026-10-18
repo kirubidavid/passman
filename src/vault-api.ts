@@ -10,6 +10,11 @@ import type {
   VaultSnapshot,
 } from "./state";
 
+export interface ResetResult {
+  reset: boolean;
+  backupFileName: string | null;
+}
+
 export const vaultApi = {
   status: () => invoke<Status>("vault_status"),
   create: (password: string) =>
@@ -17,7 +22,13 @@ export const vaultApi = {
   unlock: (password: string) =>
     invoke<VaultPreferences>("unlock_vault", { password }),
   lock: () => invoke<void>("lock_vault"),
-  reset: () => invoke<void>("reset_vault"),
+  authenticatedReset: (currentPassword: string, createBackup: boolean) =>
+    invoke<ResetResult>("authenticated_reset_vault", {
+      currentPassword,
+      createBackup,
+    }),
+  recoveryReset: (confirmationPhrase: string) =>
+    invoke<void>("recovery_reset_vault", { confirmationPhrase }),
   listEntries: () => invoke<VaultSnapshot>("list_entries"),
   setPreferences: (preferences: VaultPreferences) =>
     invoke<VaultPreferences>("set_vault_preferences", { preferences }),
@@ -34,9 +45,9 @@ export const vaultApi = {
   getTotpCode: (id: string) => invoke<TotpResult>("get_totp_code", { id }),
   generatePassword: (options: GeneratorOptions) =>
     invoke<string>("generate_password", { options }),
-  exportBackup: () => invoke<string>("export_backup"),
-  importBackup: (backup: string, password: string) =>
-    invoke<VaultSnapshot>("import_backup", { backup, password }),
+  exportBackup: () => invoke<string | null>("export_backup"),
+  importBackup: (password: string) =>
+    invoke<VaultSnapshot | null>("import_backup", { password }),
   changeMasterPassword: (currentPassword: string, newPassword: string) =>
     invoke<void>("change_master_password", { currentPassword, newPassword }),
 };

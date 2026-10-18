@@ -24,11 +24,23 @@ declare global {
 let lockInProgress = false;
 const autoLock = createAutoLock(() => void lockVault());
 
-async function resetVault() {
+function completeVaultReset(backupFileName?: string | null) {
+  autoLock.stop();
+  clearUnlockedState();
+  closeModal();
+  document.removeEventListener("keydown", keyboardShortcuts);
+  authView(false);
+  toast(
+    backupFileName
+      ? `Final encrypted backup saved as ${backupFileName}. Vault reset.`
+      : "Vault reset. Create a new master password.",
+  );
+}
+
+async function recoveryResetVault(confirmationPhrase: string) {
   try {
-    await vaultApi.reset();
-    authView(false);
-    toast("Vault reset. Create a new master password.");
+    await vaultApi.recoveryReset(confirmationPhrase);
+    completeVaultReset();
   } catch (error) {
     fail(error);
   }
@@ -71,11 +83,12 @@ configureModal({
   setFilter,
   renderEntries,
   recordActivity: autoLock.recordActivity,
+  completeVaultReset,
 });
 
 configureRendering({
   loadDashboard,
-  resetVault,
+  recoveryResetVault,
   lockVault,
   startAutoLock() {
     document.removeEventListener("keydown", keyboardShortcuts);

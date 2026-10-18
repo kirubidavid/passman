@@ -20,6 +20,7 @@ interface ModalCallbacks {
   setFilter(filter: string): void;
   renderEntries(): void;
   recordActivity(): void;
+  completeVaultReset(backupFileName?: string | null): void;
 }
 
 let callbacks: ModalCallbacks;
@@ -121,6 +122,7 @@ interface ConfirmationOptions {
   description: string;
   confirmLabel: string;
   phrase?: string;
+  onConfirmedPhrase?: (phrase: string) => void;
 }
 
 export function confirmAction(options: ConfirmationOptions): Promise<boolean> {
@@ -172,7 +174,14 @@ export function confirmAction(options: ConfirmationOptions): Promise<boolean> {
         confirm.disabled =
           (event.currentTarget as HTMLInputElement).value !== options.phrase;
       });
-    confirm.addEventListener("click", () => finish(true));
+    confirm.addEventListener("click", () => {
+      if (options.phrase) {
+        options.onConfirmedPhrase?.(
+          document.querySelector<HTMLInputElement>(`#${phraseId}`)?.value ?? "",
+        );
+      }
+      finish(true);
+    });
     activateDialog(
       `#${confirmationId}`,
       options.phrase ? `#${phraseId}` : `#${confirmationId}-cancel`,
@@ -181,20 +190,38 @@ export function confirmAction(options: ConfirmationOptions): Promise<boolean> {
   });
 }
 
+export async function confirmPhraseAction(
+  options: ConfirmationOptions & { phrase: string },
+): Promise<string | null> {
+  let confirmationPhrase = "";
+  const confirmed = await confirmAction({
+    ...options,
+    onConfirmedPhrase: (phrase) => {
+      confirmationPhrase = phrase;
+    },
+  });
+  return confirmed ? confirmationPhrase : null;
+}
+
 export function openVaultSettings() {
   $("#modal-root").innerHTML =
-    `<div class="modal-backdrop" id="settings-backdrop"><section class="entry-modal vault-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="settings-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">VAULT MANAGEMENT</p><h2 id="settings-title">Vault settings</h2></div><button class="icon-button" id="settings-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro" id="settings-description">Back up your encrypted vault, restore a previous backup, or rotate its master password.</p><div class="settings-actions"><button class="settings-action" id="export-backup"><span class="settings-action-icon">${icon("download", 18)}</span><span><strong>Export encrypted backup</strong><small>Create a portable encrypted copy protected by your current master password.</small></span></button><button class="settings-action" id="restore-backup"><span class="settings-action-icon">${icon("upload", 18)}</span><span><strong>Restore encrypted backup</strong><small>Validate and replace this vault with a previously exported copy.</small></span></button><button class="settings-action" id="change-password"><span class="settings-action-icon">${icon("key", 18)}</span><span><strong>Change master password</strong><small>Re-encrypt the vault with a fresh salt and a new master password.</small></span></button></div><p class="settings-footnote">${icon("shield", 14)} Backup files contain authenticated ciphertext only.</p></section></div>`;
+    `<div class="modal-backdrop" id="settings-backdrop"><section class="entry-modal vault-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="settings-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">VAULT MANAGEMENT</p><h2 id="settings-title">Vault settings</h2></div><button class="icon-button" id="settings-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro" id="settings-description">Back up your encrypted vault, restore a previous backup, rotate its master password, or securely reset it.</p><div class="settings-actions"><button class="settings-action" id="export-backup"><span class="settings-action-icon">${icon("download", 18)}</span><span><strong>Export encrypted backup</strong><small>Create a portable encrypted copy protected by your current master password.</small></span></button><button class="settings-action" id="restore-backup"><span class="settings-action-icon">${icon("upload", 18)}</span><span><strong>Restore encrypted backup</strong><small>Validate and replace this vault with a previously exported copy.</small></span></button><button class="settings-action" id="change-password"><span class="settings-action-icon">${icon("key", 18)}</span><span><strong>Change master password</strong><small>Re-encrypt the vault with a fresh salt and a new master password.</small></span></button><button class="settings-action" id="authenticated-reset"><span class="settings-action-icon">${icon("trash", 18)}</span><span><strong>Reset this vault</strong><small>Verify your current master password and optionally save one final encrypted backup.</small></span></button></div><p class="settings-footnote">${icon("shield", 14)} Backup files contain authenticated ciphertext only.</p></section></div>`;
   $(".settings-actions").insertAdjacentHTML(
     "beforebegin",
     `<div class="settings-preferences"><label class="auto-lock-setting" for="auto-lock-timeout"><span><strong>Auto-lock timeout</strong><small>Activity resets the timer. Passman checks the deadline again after focus, resume, or workstation unlock.</small></span><select id="auto-lock-timeout">${AUTO_LOCK_OPTIONS.map((minutes) => `<option value="${minutes}" ${minutes === getAutoLockMinutes() ? "selected" : ""}>${minutes} ${minutes === 1 ? "minute" : "minutes"}</option>`).join("")}</select></label><label class="auto-lock-setting" for="password-age-limit"><span><strong>Password age limit</strong><small>Indicators turn yellow 30 days before this limit and red when the limit is reached.</small></span><span class="number-setting"><input id="password-age-limit" type="number" min="${MIN_PASSWORD_AGE_LIMIT_DAYS}" max="${MAX_PASSWORD_AGE_LIMIT_DAYS}" step="1" value="${getPasswordAgeLimitDays()}" /><span>days</span></span></label></div>`,
   );
   $("#settings-close").addEventListener("click", closeModal);
-  $("#settings-backdrop").addEventListener("click", (event) => {
-    if (event.target === $("#settings-backdrop")) closeModal();
+  const settingsBackdrop = $("#settings-backdrop");
+  settingsBackdrop.addEventListener("click", (event) => {
+    if (event.target === settingsBackdrop) closeModal();
   });
   $("#export-backup").addEventListener("click", () => void exportBackup());
   $("#restore-backup").addEventListener("click", openRestoreModal);
   $("#change-password").addEventListener("click", openChangePasswordModal);
+  $("#authenticated-reset").addEventListener(
+    "click",
+    openAuthenticatedResetModal,
+  );
   $("#auto-lock-timeout").addEventListener("change", (event) => {
     const minutes = Number((event.currentTarget as HTMLSelectElement).value);
     if (
@@ -237,8 +264,9 @@ export function openVaultSettings() {
 async function exportBackup() {
   try {
     const filename = await vaultApi.exportBackup();
+    if (!filename) return;
     closeModal();
-    toast(`Encrypted backup saved to Downloads as ${filename}.`);
+    toast(`Encrypted backup saved as ${filename}.`);
   } catch (error) {
     fail(error);
   }
@@ -246,7 +274,7 @@ async function exportBackup() {
 
 function openRestoreModal() {
   $("#modal-root").innerHTML =
-    `<div class="modal-backdrop" id="restore-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="restore-title" aria-describedby="restore-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">RESTORE BACKUP</p><h2 id="restore-title">Replace this vault</h2></div><button class="icon-button" id="restore-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro" id="restore-description">Choose an encrypted Passman backup and enter the master password that protects it. The backup is validated before your current vault is replaced.</p><form id="restore-form" class="entry-form"><label for="backup-file">Encrypted backup <span>*</span><input id="backup-file" name="backupFile" type="file" accept=".passman,application/json" required /></label><label for="backup-password">Backup master password <span>*</span><input id="backup-password" name="password" type="password" autocomplete="current-password" minlength="12" required /></label><p class="destructive-note">Existing entries in this vault will be replaced.</p><div class="modal-footer settings-form-footer"><button type="button" class="button button-quiet" id="restore-back">Back</button><button type="submit" class="button button-primary">${icon("upload", 16)} Restore backup</button></div></form></section></div>`;
+    `<div class="modal-backdrop" id="restore-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="restore-title" aria-describedby="restore-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">RESTORE BACKUP</p><h2 id="restore-title">Replace this vault</h2></div><button class="icon-button" id="restore-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro" id="restore-description">Enter the master password that protects the backup. Passman will then open a native file picker showing encrypted .passman backups.</p><form id="restore-form" class="entry-form"><label for="backup-password">Backup master password <span>*</span><input id="backup-password" name="password" type="password" autocomplete="current-password" minlength="12" required /></label><p class="destructive-note">The selected backup is validated before existing entries in this vault are replaced.</p><div class="modal-footer settings-form-footer"><button type="button" class="button button-quiet" id="restore-back">Back</button><button type="submit" class="button button-primary">${icon("upload", 16)} Choose backup and restore</button></div></form></section></div>`;
   $("#restore-close").addEventListener("click", closeModal);
   $("#restore-back").addEventListener("click", openVaultSettings);
   $("#restore-backdrop").addEventListener("click", (event) => {
@@ -268,19 +296,14 @@ function openRestoreModal() {
         return;
       submit.disabled = true;
       const data = new FormData(form);
-      const file = data.get("backupFile");
-      if (!(file instanceof File) || file.size === 0) {
-        throw new Error("Choose a valid encrypted backup.");
-      }
-      if (file.size > 64 * 1024 * 1024) {
-        throw new Error("Backup file is larger than the supported limit.");
-      }
-      applyVaultSnapshot(
-        await vaultApi.importBackup(
-          await file.text(),
-          String(data.get("password") ?? ""),
-        ),
+      const snapshot = await vaultApi.importBackup(
+        String(data.get("password") ?? ""),
       );
+      if (!snapshot) {
+        submit.disabled = false;
+        return;
+      }
+      applyVaultSnapshot(snapshot);
       state.searchTerm = "";
       state.activeFilter = "All items";
       closeModal();
@@ -292,7 +315,48 @@ function openRestoreModal() {
       fail(error);
     }
   });
-  activateDialog("#restore-backdrop [role=dialog]", "#backup-file");
+  activateDialog("#restore-backdrop [role=dialog]", "#backup-password");
+}
+
+function openAuthenticatedResetModal() {
+  $("#modal-root").innerHTML =
+    `<div class="modal-backdrop" id="authenticated-reset-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="authenticated-reset-title" aria-describedby="authenticated-reset-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">RESET VAULT</p><h2 id="authenticated-reset-title">Permanently reset this vault</h2></div><button class="icon-button" id="authenticated-reset-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro" id="authenticated-reset-description">Enter the current master password. Rust verifies it before deleting the encrypted vault.</p><form id="authenticated-reset-form" class="entry-form"><label for="reset-master-password">Current master password <span>*</span><input id="reset-master-password" name="currentPassword" type="password" autocomplete="current-password" minlength="12" required /></label><label class="favorite-toggle"><input name="createBackup" type="checkbox" checked /><span class="checkmark" aria-hidden="true"></span><span class="favorite-text">Create a final encrypted backup before reset</span></label><p class="destructive-note">Without a backup, every saved password will be permanently lost.</p><p class="auth-error" id="authenticated-reset-error"></p><div class="modal-footer settings-form-footer"><button type="button" class="button button-quiet" id="authenticated-reset-back">Back</button><button type="submit" class="button button-danger">${icon("trash", 16)} Verify and reset</button></div></form></section></div>`;
+  $("#authenticated-reset-close").addEventListener("click", closeModal);
+  $("#authenticated-reset-back").addEventListener("click", openVaultSettings);
+  const backdrop = $("#authenticated-reset-backdrop");
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop) closeModal();
+  });
+  $("#authenticated-reset-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const submit = $<HTMLButtonElement>('button[type="submit"]', form);
+    const passwordInput = $<HTMLInputElement>("#reset-master-password");
+    const errorElement = $("#authenticated-reset-error");
+    submit.disabled = true;
+    errorElement.textContent = "";
+    try {
+      const data = new FormData(form);
+      const result = await vaultApi.authenticatedReset(
+        String(data.get("currentPassword") ?? ""),
+        data.get("createBackup") === "on",
+      );
+      if (!result.reset) {
+        submit.disabled = false;
+        return;
+      }
+      callbacks.completeVaultReset(result.backupFileName);
+    } catch (error) {
+      passwordInput.value = "";
+      errorElement.textContent = String(error).replace(/^Error: /, "");
+      submit.disabled = false;
+      passwordInput.focus();
+    }
+  });
+  activateDialog(
+    "#authenticated-reset-backdrop [role=dialog]",
+    "#reset-master-password",
+  );
 }
 
 function openChangePasswordModal() {

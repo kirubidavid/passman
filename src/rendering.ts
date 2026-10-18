@@ -2,6 +2,7 @@ import { copyText } from "./clipboard";
 import { generatePassword } from "./generator";
 import {
   confirmAction,
+  confirmPhraseAction,
   openEntryModal,
   openVaultSettings,
   showTotp,
@@ -17,7 +18,7 @@ import { vaultApi } from "./vault-api";
 
 interface RenderingCallbacks {
   loadDashboard(): Promise<void>;
-  resetVault(): Promise<void>;
+  recoveryResetVault(confirmationPhrase: string): Promise<void>;
   lockVault(): Promise<void>;
   startAutoLock(): void;
 }
@@ -171,16 +172,15 @@ export function authView(exists: boolean, message = "") {
   document
     .querySelector<HTMLButtonElement>("#reset-vault")
     ?.addEventListener("click", async () => {
-      if (
-        await confirmAction({
-          title: "Permanently reset this vault?",
-          description:
-            "This deletes the encrypted vault and every saved password. This action cannot be undone.",
-          confirmLabel: "Reset vault permanently",
-          phrase: "RESET VAULT",
-        })
-      ) {
-        await callbacks.resetVault();
+      const confirmationPhrase = await confirmPhraseAction({
+        title: "Recovery reset without your password?",
+        description:
+          "Use this only when the master password is forgotten. The encrypted vault and every saved password will be permanently deleted.",
+        confirmLabel: "Recovery reset permanently",
+        phrase: "RESET VAULT",
+      });
+      if (confirmationPhrase) {
+        await callbacks.recoveryResetVault(confirmationPhrase);
       }
     });
 }
