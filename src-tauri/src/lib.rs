@@ -232,11 +232,18 @@ fn load_vault(
     password: &str,
 ) -> Result<(Zeroizing<[u8; KEY_LEN]>, [u8; SALT_LEN], Vec<Entry>), String> {
     let data = fs::read(path).map_err(|e| format!("Could not read vault: {e}"))?;
+    load_vault_data(&data, password)
+}
+
+fn load_vault_data(
+    data: &[u8],
+    password: &str,
+) -> Result<(Zeroizing<[u8; KEY_LEN]>, [u8; SALT_LEN], Vec<Entry>), String> {
     if data.len() > 64 * 1024 * 1024 {
         return Err("Vault file is larger than the supported limit".into());
     }
     let file: VaultFile =
-        serde_json::from_slice(&data).map_err(|_| "Vault file is invalid".to_string())?;
+        serde_json::from_slice(data).map_err(|_| "Vault file is invalid".to_string())?;
     if file.version != 1 {
         return Err("This vault version is not supported".into());
     }
@@ -266,6 +273,12 @@ fn with_vault<T>(
 
 fn persist(path: &PathBuf, vault: &UnlockedVault) -> Result<(), String> {
     write_vault(path, &vault.salt, &vault.key, &vault.entries)
+}
+
+fn fresh_salt() -> [u8; SALT_LEN] {
+    let mut salt = [0_u8; SALT_LEN];
+    OsRng.fill_bytes(&mut salt);
+    salt
 }
 
 #[derive(Serialize)]
@@ -309,8 +322,7 @@ fn create_vault(
     if path.exists() {
         return Err("A vault already exists".into());
     }
-    let mut salt = [0_u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
+    let salt = fresh_salt();
     let key = derive_key(password.as_str(), &salt)?;
     let entries = Vec::new();
     write_vault(&path, &salt, &key, &entries)?;
@@ -346,6 +358,91 @@ fn lock_vault(state: tauri::State<'_, AppState>) -> Result<(), String> {
         .lock()
         .map_err(|_| "Vault is unavailable".to_string())?;
     *guard = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn export_backup(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let directory = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("Could not locate the Downloads folder: {e}"))?;
+    fs::create_dir_all(&directory)
+        .map_err(|e| format!("Could not prepare the Downloads folder: {e}"))?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch".to_string())?
+        .as_secs();
+    let filename = format!(
+        "passman-backup-{timestamp}-{:08x}.passman",
+        OsRng.next_u32()
+    );
+    let destination = directory.join(&filename);
+    with_vault(&state, |vault| {
+        write_vault(&destination, &vault.salt, &vault.key, &vault.entries)
+            .map_err(|error| format!("Could not export backup: {error}"))?;
+        Ok(filename)
+    })
+}
+
+#[tauri::command]
+fn import_backup(
+    backup: String,
+    password: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<EntrySummary>, String> {
+    let active_path = vault_path(&app)?;
+    let backup = Zeroizing::new(backup);
+    let password = Zeroizing::new(password);
+    let mut guard = state
+        .vault
+        .lock()
+        .map_err(|_| "Vault is unavailable".to_string())?;
+    if guard.is_none() {
+        return Err("Unlock your vault before restoring a backup".into());
+    }
+    let (key, salt, entries) = load_vault_data(backup.as_bytes(), password.as_str())
+        .map_err(|error| format!("Could not restore backup: {error}"))?;
+    write_vault(&active_path, &salt, &key, &entries)
+        .map_err(|error| format!("Could not restore backup: {error}"))?;
+    let summaries = entries.iter().map(EntrySummary::from).collect();
+    *guard = Some(UnlockedVault { key, salt, entries });
+    Ok(summaries)
+}
+
+#[tauri::command]
+fn change_master_password(
+    current_password: String,
+    new_password: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let current_password = Zeroizing::new(current_password);
+    let new_password = Zeroizing::new(new_password);
+    if new_password.chars().count() < 12 {
+        return Err("Choose a new master password with at least 12 characters".into());
+    }
+    if current_password.as_str() == new_password.as_str() {
+        return Err("Choose a new master password that is different from the current one".into());
+    }
+    let path = vault_path(&app)?;
+    let mut guard = state
+        .vault
+        .lock()
+        .map_err(|_| "Vault is unavailable".to_string())?;
+    if guard.is_none() {
+        return Err("Unlock your vault before changing its master password".into());
+    }
+    let (_, _, entries) = load_vault(&path, current_password.as_str())
+        .map_err(|_| "Current master password is incorrect".to_string())?;
+    let salt = fresh_salt();
+    let key = derive_key(new_password.as_str(), &salt)?;
+    write_vault(&path, &salt, &key, &entries)?;
+    *guard = Some(UnlockedVault { key, salt, entries });
     Ok(())
 }
 
@@ -686,6 +783,9 @@ pub fn run() {
             create_vault,
             unlock_vault,
             lock_vault,
+            export_backup,
+            import_backup,
+            change_master_password,
             reset_vault,
             list_entries,
             get_entry,
@@ -808,5 +908,66 @@ mod tests {
         let entry = r#"{"id":"x","title":"mail","username":"u","password":"p","website":"","notes":"","favorite":false,"updatedAt":1}"#;
         let entry: Entry = serde_json::from_str(entry).unwrap();
         assert!(entry.totp_secret.is_none());
+    }
+
+    #[test]
+    fn exported_vault_round_trips_with_its_master_password() {
+        let path = std::env::temp_dir().join(format!(
+            "passman-backup-test-{}.passman",
+            OsRng.next_u64()
+        ));
+        let salt = fresh_salt();
+        let key = derive_key("a secure test password", &salt).unwrap();
+        let entries = vec![Entry {
+            id: "backup-entry".into(),
+            title: "Backup".into(),
+            username: "user".into(),
+            password: "secret".into(),
+            website: String::new(),
+            notes: String::new(),
+            totp_secret: None,
+            favorite: false,
+            updated_at: 1,
+        }];
+
+        write_vault(&path, &salt, &key, &entries).unwrap();
+        let (_, loaded_salt, loaded_entries) =
+            load_vault(&path, "a secure test password").unwrap();
+
+        assert_eq!(loaded_salt, salt);
+        assert_eq!(loaded_entries[0].password, "secret");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rekeyed_vault_uses_fresh_salt_and_rejects_old_password() {
+        let path =
+            std::env::temp_dir().join(format!("passman-rekey-test-{}.json", OsRng.next_u64()));
+        let old_salt = fresh_salt();
+        let old_key = derive_key("old secure password", &old_salt).unwrap();
+        let entries = vec![Entry {
+            id: "rekey-entry".into(),
+            title: "Rekey".into(),
+            username: String::new(),
+            password: "secret".into(),
+            website: String::new(),
+            notes: String::new(),
+            totp_secret: None,
+            favorite: false,
+            updated_at: 1,
+        }];
+        write_vault(&path, &old_salt, &old_key, &entries).unwrap();
+
+        let new_salt = fresh_salt();
+        let new_key = derive_key("new secure password", &new_salt).unwrap();
+        write_vault(&path, &new_salt, &new_key, &entries).unwrap();
+
+        assert_ne!(new_salt, old_salt);
+        assert!(load_vault(&path, "old secure password").is_err());
+        assert_eq!(
+            load_vault(&path, "new secure password").unwrap().2[0].password,
+            "secret"
+        );
+        fs::remove_file(path).unwrap();
     }
 }

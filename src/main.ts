@@ -53,6 +53,9 @@ const icon = (name: string, size = 18) => {
     close: '<path d="m18 6-12 12M6 6l12 12"/>',
     check: '<path d="m5 12 4 4L19 6"/>',
     spark: '<path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 14 1.2 2.8L23 18l-2.8 1.2L19 22l-1.2-2.8L15 18l2.8-1.2L19 14Z"/>',
+    settings: '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.94 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.57 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.57a1.7 1.7 0 0 0 1.03-1.56V3h4v.08A1.7 1.7 0 0 0 15.06 4.6a1.7 1.7 0 0 0 1.88-.34L17 4.2 19.83 7l-.06.06A1.7 1.7 0 0 0 19.43 9c.22.62.8 1.03 1.46 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/>',
+    download: '<path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>',
+    upload: '<path d="M12 16V4m0 0 4 4m-4-4-4 4"/><path d="M5 20h14"/>',
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? ""}</svg>`;
 };
@@ -147,6 +150,96 @@ async function resetVault() {
   } catch (error) { fail(error); }
 }
 
+function closeModal() {
+  window.clearInterval(totpRefreshTimer);
+  document.querySelector<HTMLElement>("#modal-root")?.replaceChildren();
+  passwordVisible = false;
+}
+
+function openVaultSettings() {
+  $("#modal-root").innerHTML = `<div class="modal-backdrop" id="settings-backdrop"><section class="entry-modal vault-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div class="modal-head"><div><p class="eyebrow">VAULT MANAGEMENT</p><h2 id="settings-title">Vault settings</h2></div><button class="icon-button" id="settings-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro">Back up your encrypted vault, restore a previous backup, or rotate its master password.</p><div class="settings-actions"><button class="settings-action" id="export-backup"><span class="settings-action-icon">${icon("download", 18)}</span><span><strong>Export encrypted backup</strong><small>Create a portable encrypted copy protected by your current master password.</small></span></button><button class="settings-action" id="restore-backup"><span class="settings-action-icon">${icon("upload", 18)}</span><span><strong>Restore encrypted backup</strong><small>Validate and replace this vault with a previously exported copy.</small></span></button><button class="settings-action" id="change-password"><span class="settings-action-icon">${icon("key", 18)}</span><span><strong>Change master password</strong><small>Re-encrypt the vault with a fresh salt and a new master password.</small></span></button></div><p class="settings-footnote">${icon("shield", 14)} Backup files contain authenticated ciphertext only.</p></section></div>`;
+  $("#settings-close").addEventListener("click", closeModal);
+  $("#settings-backdrop").addEventListener("click", (event) => { if (event.target === $("#settings-backdrop")) closeModal(); });
+  $("#export-backup").addEventListener("click", () => void exportBackup());
+  $("#restore-backup").addEventListener("click", openRestoreModal);
+  $("#change-password").addEventListener("click", openChangePasswordModal);
+  $("#export-backup").focus();
+}
+
+async function exportBackup() {
+  try {
+    const filename = await invoke<string>("export_backup");
+    closeModal();
+    toast(`Encrypted backup saved to Downloads as ${filename}.`);
+  } catch (error) { fail(error); }
+}
+
+function openRestoreModal() {
+  $("#modal-root").innerHTML = `<div class="modal-backdrop" id="restore-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="restore-title"><div class="modal-head"><div><p class="eyebrow">RESTORE BACKUP</p><h2 id="restore-title">Replace this vault</h2></div><button class="icon-button" id="restore-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro">Choose an encrypted Passman backup and enter the master password that protects it. The backup is validated before your current vault is replaced.</p><form id="restore-form" class="entry-form"><label for="backup-file">Encrypted backup <span>*</span><input id="backup-file" name="backupFile" type="file" accept=".passman,application/json" required /></label><label for="backup-password">Backup master password <span>*</span><input id="backup-password" name="password" type="password" autocomplete="current-password" minlength="12" required /></label><p class="destructive-note">Existing entries in this vault will be replaced.</p><div class="modal-footer settings-form-footer"><button type="button" class="button button-quiet" id="restore-back">Back</button><button type="submit" class="button button-primary">${icon("upload", 16)} Restore backup</button></div></form></section></div>`;
+  const back = () => openVaultSettings();
+  $("#restore-close").addEventListener("click", closeModal);
+  $("#restore-back").addEventListener("click", back);
+  $("#restore-backdrop").addEventListener("click", (event) => { if (event.target === $("#restore-backdrop")) closeModal(); });
+  $("#restore-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    try {
+      if (!confirm("Restore this backup? Your current vault entries will be replaced.")) return;
+      submit.disabled = true;
+      const data = new FormData(form);
+      const file = data.get("backupFile");
+      if (!(file instanceof File) || file.size === 0) throw new Error("Choose a valid encrypted backup.");
+      if (file.size > 64 * 1024 * 1024) throw new Error("Backup file is larger than the supported limit.");
+      const backup = await file.text();
+      const password = String(data.get("password") ?? "");
+      entries = await invoke<EntrySummary[]>("import_backup", { backup, password });
+      searchTerm = "";
+      activeFilter = "All items";
+      closeModal();
+      ($("#search-input") as HTMLInputElement).value = "";
+      setFilter("All items");
+      toast("Encrypted backup restored.");
+    } catch (error) {
+      submit.disabled = false;
+      fail(error);
+    }
+  });
+  $("#backup-file").focus();
+}
+
+function openChangePasswordModal() {
+  $("#modal-root").innerHTML = `<div class="modal-backdrop" id="password-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="password-title"><div class="modal-head"><div><p class="eyebrow">MASTER PASSWORD</p><h2 id="password-title">Change master password</h2></div><button class="icon-button" id="password-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro">Your vault will be re-encrypted with a fresh random salt. Existing backups will continue to use their original passwords.</p><form id="change-password-form" class="entry-form"><label for="current-master-password">Current master password <span>*</span><input id="current-master-password" name="currentPassword" type="password" autocomplete="current-password" minlength="12" required autofocus /></label><label for="new-master-password">New master password <span>*</span><input id="new-master-password" name="newPassword" type="password" autocomplete="new-password" minlength="12" required /></label><label for="confirm-new-master-password">Confirm new master password <span>*</span><input id="confirm-new-master-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required /></label><p class="auth-error" id="password-error"></p><div class="modal-footer settings-form-footer"><button type="button" class="button button-quiet" id="password-back">Back</button><button type="submit" class="button button-primary">${icon("key", 16)} Change password</button></div></form></section></div>`;
+  $("#password-close").addEventListener("click", closeModal);
+  $("#password-back").addEventListener("click", openVaultSettings);
+  $("#password-backdrop").addEventListener("click", (event) => { if (event.target === $("#password-backdrop")) closeModal(); });
+  $("#change-password-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const currentPassword = String(data.get("currentPassword") ?? "");
+    const newPassword = String(data.get("newPassword") ?? "");
+    const errorEl = $("#password-error");
+    if (newPassword !== String(data.get("confirmPassword") ?? "")) {
+      errorEl.textContent = "New master passwords do not match.";
+      return;
+    }
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    submit.disabled = true;
+    errorEl.textContent = "";
+    try {
+      await invoke("change_master_password", { currentPassword, newPassword });
+      form.reset();
+      closeModal();
+      toast("Master password changed securely.");
+    } catch (error) {
+      submit.disabled = false;
+      errorEl.textContent = String(error).replace(/^Error: /, "");
+    }
+  });
+  $("#current-master-password").focus();
+}
+
 function dashboardShell() {
   $("#app").innerHTML = `
     <div class="app-shell">
@@ -160,7 +253,7 @@ function dashboardShell() {
         </nav>
         <div class="sidebar-rule"></div>
         <div class="sidebar-hint"><div class="hint-icon">${icon("shield", 17)}</div><strong>Private by design</strong><p>Your vault is encrypted on this device. Only you hold the key.</p></div>
-        <div class="sidebar-bottom"><span class="avatar">${icon("lock", 15)}</span><div class="user-label"><strong>Personal vault</strong><span>Protected locally</span></div><button class="icon-button lock-button" id="lock-button" aria-label="Lock vault" title="Lock vault">${icon("lock", 17)}</button></div>
+        <div class="sidebar-bottom"><span class="avatar">${icon("lock", 15)}</span><div class="user-label"><strong>Personal vault</strong><span>Protected locally</span></div><button class="icon-button vault-settings-button" id="vault-settings" aria-label="Vault settings" title="Vault settings">${icon("settings", 17)}</button><button class="icon-button" id="lock-button" aria-label="Lock vault" title="Lock vault">${icon("lock", 17)}</button></div>
       </aside>
       <main class="main-content">
         <header class="topbar"><div class="breadcrumb">Vault <span>/</span> <strong id="breadcrumb-current">All items</strong></div><div class="top-actions"><span class="secure-status"><span class="status-dot"></span> Vault secured</span><button class="button button-primary add-button" id="add-entry">${icon("plus", 16)}<span>New item</span></button></div></header>
@@ -183,6 +276,7 @@ function dashboardShell() {
   $("#password-length").addEventListener("input", (event) => { $("#length-value").textContent = (event.target as HTMLInputElement).value; });
   $("#search-input").addEventListener("input", (event) => { searchTerm = (event.target as HTMLInputElement).value.toLowerCase(); renderEntries(); });
   document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((button) => button.addEventListener("click", () => setFilter(button.dataset.filter ?? "All items")));
+  $("#vault-settings").addEventListener("click", openVaultSettings);
   $("#lock-button").addEventListener("click", () => void lockVault());
   document.addEventListener("keydown", keyboardShortcuts);
   ["pointerdown", "touchstart"].forEach((name) => document.addEventListener(name, armAutoLock, { passive: true }));
@@ -264,7 +358,7 @@ async function showTotp(id: string) {
     const result = await invoke<TotpResult>("get_totp_code", { id });
     const entry = entries.find((item) => item.id === id);
     $("#modal-root").innerHTML = `<div class="modal-backdrop" id="totp-backdrop"><section class="totp-modal" role="dialog" aria-modal="true" aria-labelledby="totp-title"><button class="icon-button totp-close" id="totp-close" aria-label="Close">${icon("close", 19)}</button><div class="totp-icon">${icon("key", 22)}</div><p class="eyebrow">TWO-FACTOR AUTHENTICATION</p><h2 id="totp-title">${escapeHtml(entry?.title ?? "Authenticator")}</h2><p class="totp-copy">Your current one-time code</p><output class="totp-code" id="totp-code">${result.code}</output><div class="totp-countdown"><span class="totp-progress" id="totp-progress" style="--progress:${(result.secondsRemaining / 30) * 100}%"></span><span id="totp-remaining">${result.secondsRemaining}s</span></div><button class="button button-primary totp-copy" id="copy-totp">${icon("copy", 16)} Copy code</button><p class="totp-footnote">Codes refresh automatically · valid for 30 seconds</p></section></div>`;
-    const close = () => { window.clearInterval(totpRefreshTimer); $("#modal-root").innerHTML = ""; };
+    const close = closeModal;
     $("#totp-close").addEventListener("click", close);
     $("#totp-backdrop").addEventListener("click", (event) => { if (event.target === $("#totp-backdrop")) close(); });
     $("#copy-totp").addEventListener("click", () => {
@@ -290,7 +384,7 @@ function openEntryModal(entry?: EntryDetails) {
   const note = entry?.notes ?? "";
     $("#modal-root").innerHTML = `<div class="modal-backdrop" id="modal-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><div><p class="eyebrow">SECURE ITEM</p><h2 id="modal-title">${editing ? "Edit password" : "Add a password"}</h2></div><button class="icon-button" id="modal-close" aria-label="Close">${icon("close", 19)}</button></div><form id="entry-form" class="entry-form"><label>Item name <span>*</span><input name="title" maxlength="200" required placeholder="e.g. Personal email" value="${escapeHtml(entry?.title ?? "")}" autofocus /></label><label>Username or email<input name="username" maxlength="500" autocomplete="off" placeholder="name@example.com" value="${escapeHtml(entry?.username ?? "")}" /></label><label>Password <span>*</span><div class="password-field"><input name="password" type="${passwordVisible ? "text" : "password"}" maxlength="4096" required autocomplete="new-password" placeholder="Enter or generate a password" value="${escapeHtml(entry?.password ?? generatedPassword)}" /><button type="button" class="inline-action" id="toggle-password" aria-label="Show password">${icon("eye", 16)}</button><button type="button" class="inline-action generate-inline" id="modal-generate">${icon("spark", 15)} Generate</button>${!editing ? `<button type="button" class="inline-action copy-generated-inline" id="copy-entry-password" aria-label="Copy generated password" title="Copy generated password">${icon("copy", 15)}</button>` : ""}</div></label><label>Website<input name="website" maxlength="2000" placeholder="https://example.com" value="${escapeHtml(entry?.website ?? "")}" /></label><label>Notes <span class="optional">OPTIONAL</span><textarea name="notes" maxlength="10000" rows="3" placeholder="Add a note…">${escapeHtml(note)}</textarea></label><label class="favorite-toggle"><input name="favorite" type="checkbox" ${favorite ? "checked" : ""} /><span class="checkmark"></span> Add to favorites</label><div class="modal-footer"><button type="button" class="button button-quiet" id="modal-cancel">Cancel</button><button type="submit" class="button button-primary">${icon("check", 16)} ${editing ? "Save changes" : "Save password"}</button></div></form></section></div>`;
   $("#entry-form").insertAdjacentHTML("beforeend", `<div class="totp-settings"><div class="totp-settings-head"><span class="totp-settings-icon">${icon("key", 16)}</span><span><strong>Authenticator codes</strong><small>${entry ? (entry.hasTotp ? "Set up for this item" : "Not configured") : "Save this item first to set up codes."}</small></span>${entry?.hasTotp ? '<button type="button" class="text-danger" id="remove-totp">Remove</button>' : ""}</div>${entry ? `<label for="totp-secret-input">${entry.hasTotp ? "Replace setup key" : "Setup key"}<input id="totp-secret-input" type="password" autocomplete="off" placeholder="Paste the Base32 setup key" maxlength="128" /></label><button type="button" class="button button-quiet" id="save-totp">${icon("key", 15)} ${entry.hasTotp ? "Update authenticator" : "Set up authenticator"}</button>` : ""}</div>`);
-  const close = () => { $("#modal-root").innerHTML = ""; passwordVisible = false; };
+  const close = closeModal;
   $("#modal-close").addEventListener("click", close);
   $("#modal-cancel").addEventListener("click", close);
   $("#modal-backdrop").addEventListener("click", (event) => { if (event.target === $("#modal-backdrop")) close(); });
@@ -381,8 +475,11 @@ async function lockVault() {
     document.removeEventListener("pointerdown", armAutoLock);
     document.removeEventListener("keydown", armAutoLock);
     document.removeEventListener("touchstart", armAutoLock);
-    window.clearInterval(totpRefreshTimer);
+    closeModal();
     await invoke("lock_vault");
+    entries = [];
+    generatedPassword = "";
+    searchTerm = "";
     document.removeEventListener("keydown", keyboardShortcuts);
     const status = await invoke<Status>("vault_status");
     authView(status.exists);
@@ -394,7 +491,7 @@ function keyboardShortcuts(event: KeyboardEvent) {
     event.preventDefault();
     $("#search-input")?.focus();
   }
-  if (event.key === "Escape") $("#modal-root") && ($("#modal-root").innerHTML = "");
+  if (event.key === "Escape") closeModal();
 }
 
 async function boot() {
