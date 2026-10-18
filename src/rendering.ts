@@ -6,7 +6,7 @@ import {
   openVaultSettings,
   showTotp,
 } from "./modal";
-import { state } from "./state";
+import { getPasswordAgeLimitDays, state } from "./state";
 import { $, escapeHtml, fail, icon, toast } from "./ui";
 import { vaultApi } from "./vault-api";
 
@@ -46,6 +46,35 @@ function timeLabel(timestamp: number) {
     month: "short",
     day: "numeric",
   }).format(timestamp);
+}
+
+const DAY_MS = 86_400_000;
+
+export function getPasswordAgeStatus(
+  passwordChangedAt: number,
+  limitDays = getPasswordAgeLimitDays(),
+  now = Date.now(),
+) {
+  const ageDays = Math.max(0, Math.floor((now - passwordChangedAt) / DAY_MS));
+  if (ageDays > limitDays) {
+    return {
+      level: "red",
+      label: "Change now",
+      description: `Password is ${ageDays} days old and exceeds the ${limitDays}-day limit.`,
+    };
+  }
+  if (ageDays >= limitDays - 30) {
+    return {
+      level: "yellow",
+      label: "Due soon",
+      description: `Password is ${ageDays} days old and approaches the ${limitDays}-day limit.`,
+    };
+  }
+  return {
+    level: "green",
+    label: "Current",
+    description: `Password is ${ageDays} days old and within the ${limitDays}-day limit.`,
+  };
 }
 
 export function authView(exists: boolean, message = "") {
@@ -210,7 +239,10 @@ export function renderEntries() {
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((entry) => {
       const id = escapeHtml(entry.id);
-      return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password">${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</div></article>`;
+      const age = getPasswordAgeStatus(
+        entry.passwordChangedAt || entry.updatedAt,
+      );
+      return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password"><span class="password-age password-age-${age.level}" title="${escapeHtml(age.description)}" aria-label="${escapeHtml(age.description)}"><span class="password-age-dot" aria-hidden="true"></span>${age.label}</span><span>${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</span></div></article>`;
     })
     .join("")}</div>`;
   area.querySelectorAll<HTMLButtonElement>(".entry-copy").forEach((button) => {

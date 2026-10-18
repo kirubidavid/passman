@@ -44,6 +44,20 @@ fn with_vault<T>(
     f(vault)
 }
 
+fn update_entry_timestamps(entry: &mut Entry, previous: Option<&Entry>, now: u64) {
+    entry.updated_at = now;
+    entry.password_changed_at = match previous {
+        Some(previous) if previous.password == entry.password => {
+            if previous.password_changed_at == 0 {
+                previous.updated_at
+            } else {
+                previous.password_changed_at
+            }
+        }
+        _ => now,
+    };
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VaultStatus {
@@ -419,10 +433,17 @@ pub(crate) fn save_entry(
     {
         return Err("Authenticator secret is invalid".into());
     }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch".to_string())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "System time is outside the supported range".to_string())?;
     let path = vault_path(&app)?;
     with_vault(&state, |vault| {
         let original_entries = vault.entries.clone();
         if let Some(index) = vault.entries.iter().position(|e| e.id == entry.id) {
+            update_entry_timestamps(&mut entry, Some(&vault.entries[index]), now);
             let stored_totp = vault.entries[index].totp_secret.take();
             if entry.totp_secret.is_none() {
                 entry.totp_secret = stored_totp;
@@ -435,6 +456,7 @@ pub(crate) fn save_entry(
             if vault.entries.len() >= MAX_ENTRIES {
                 return Err("Vault has reached its entry limit".into());
             }
+            update_entry_timestamps(&mut entry, None, now);
             vault.entries.push(entry);
         }
         if let Err(error) = persist(&path, vault) {
@@ -563,6 +585,7 @@ mod tests {
             totp_secret: None,
             favorite: false,
             updated_at: 1,
+            password_changed_at: 1,
         }
     }
 
@@ -640,6 +663,7 @@ mod tests {
             totp_secret: None,
             favorite: false,
             updated_at: 1,
+            password_changed_at: 1,
         }];
         let key = [7_u8; KEY_LEN];
         let (nonce, ciphertext) = seal(&key, &entries).unwrap();
@@ -669,6 +693,27 @@ mod tests {
         let entry = r#"{"id":"x","title":"mail","username":"u","password":"p","website":"","notes":"","favorite":false,"updatedAt":1}"#;
         let entry: Entry = serde_json::from_str(entry).unwrap();
         assert!(entry.totp_secret.is_none());
+        assert_eq!(entry.password_changed_at, 0);
+    }
+
+    #[test]
+    fn password_age_changes_only_when_the_password_changes() {
+        let mut previous = persistence_test_entry("same secret");
+        previous.password_changed_at = 0;
+        let mut metadata_edit = previous.clone();
+        metadata_edit.title = "Renamed".into();
+        update_entry_timestamps(&mut metadata_edit, Some(&previous), 500);
+        assert_eq!(metadata_edit.updated_at, 500);
+        assert_eq!(metadata_edit.password_changed_at, 1);
+
+        let mut password_edit = previous.clone();
+        password_edit.password = "new secret".into();
+        update_entry_timestamps(&mut password_edit, Some(&previous), 500);
+        assert_eq!(password_edit.password_changed_at, 500);
+
+        let mut new_entry = persistence_test_entry("new secret");
+        update_entry_timestamps(&mut new_entry, None, 700);
+        assert_eq!(new_entry.password_changed_at, 700);
     }
 
     #[test]
@@ -689,6 +734,7 @@ mod tests {
             totp_secret: None,
             favorite: false,
             updated_at: 1,
+            password_changed_at: 1,
         }];
 
         write_vault(&path, &salt, &key, &entries).unwrap();
@@ -818,6 +864,7 @@ mod tests {
             totp_secret: None,
             favorite: false,
             updated_at: 1,
+            password_changed_at: 1,
         }];
         write_vault(&path, &old_salt, &old_key, &entries).unwrap();
 

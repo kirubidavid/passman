@@ -2,8 +2,12 @@ import { copyText } from "./clipboard";
 import { generatePassword } from "./generator";
 import {
   AUTO_LOCK_OPTIONS,
+  MAX_PASSWORD_AGE_LIMIT_DAYS,
+  MIN_PASSWORD_AGE_LIMIT_DAYS,
   getAutoLockMinutes,
+  getPasswordAgeLimitDays,
   setAutoLockMinutes,
+  setPasswordAgeLimitDays,
   state,
   type EntryDetails,
   type EntryInput,
@@ -181,7 +185,7 @@ export function openVaultSettings() {
     `<div class="modal-backdrop" id="settings-backdrop"><section class="entry-modal vault-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="settings-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">VAULT MANAGEMENT</p><h2 id="settings-title">Vault settings</h2></div><button class="icon-button" id="settings-close" aria-label="Close">${icon("close", 19)}</button></div><p class="settings-intro" id="settings-description">Back up your encrypted vault, restore a previous backup, or rotate its master password.</p><div class="settings-actions"><button class="settings-action" id="export-backup"><span class="settings-action-icon">${icon("download", 18)}</span><span><strong>Export encrypted backup</strong><small>Create a portable encrypted copy protected by your current master password.</small></span></button><button class="settings-action" id="restore-backup"><span class="settings-action-icon">${icon("upload", 18)}</span><span><strong>Restore encrypted backup</strong><small>Validate and replace this vault with a previously exported copy.</small></span></button><button class="settings-action" id="change-password"><span class="settings-action-icon">${icon("key", 18)}</span><span><strong>Change master password</strong><small>Re-encrypt the vault with a fresh salt and a new master password.</small></span></button></div><p class="settings-footnote">${icon("shield", 14)} Backup files contain authenticated ciphertext only.</p></section></div>`;
   $(".settings-actions").insertAdjacentHTML(
     "beforebegin",
-    `<label class="auto-lock-setting" for="auto-lock-timeout"><span><strong>Auto-lock timeout</strong><small>Activity resets the timer. Passman checks the deadline again after focus, resume, or workstation unlock.</small></span><select id="auto-lock-timeout">${AUTO_LOCK_OPTIONS.map((minutes) => `<option value="${minutes}" ${minutes === getAutoLockMinutes() ? "selected" : ""}>${minutes} ${minutes === 1 ? "minute" : "minutes"}</option>`).join("")}</select></label>`,
+    `<div class="settings-preferences"><label class="auto-lock-setting" for="auto-lock-timeout"><span><strong>Auto-lock timeout</strong><small>Activity resets the timer. Passman checks the deadline again after focus, resume, or workstation unlock.</small></span><select id="auto-lock-timeout">${AUTO_LOCK_OPTIONS.map((minutes) => `<option value="${minutes}" ${minutes === getAutoLockMinutes() ? "selected" : ""}>${minutes} ${minutes === 1 ? "minute" : "minutes"}</option>`).join("")}</select></label><label class="auto-lock-setting" for="password-age-limit"><span><strong>Password age limit</strong><small>Indicators turn yellow 30 days before this limit and red when the limit is reached.</small></span><span class="number-setting"><input id="password-age-limit" type="number" min="${MIN_PASSWORD_AGE_LIMIT_DAYS}" max="${MAX_PASSWORD_AGE_LIMIT_DAYS}" step="1" value="${getPasswordAgeLimitDays()}" /><span>days</span></span></label></div>`,
   );
   $("#settings-close").addEventListener("click", closeModal);
   $("#settings-backdrop").addEventListener("click", (event) => {
@@ -205,6 +209,18 @@ export function openVaultSettings() {
         `Auto-lock timeout set to ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`,
       );
     } catch (error) {
+      fail(error);
+    }
+  });
+  $("#password-age-limit").addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    try {
+      const days = Number(input.value);
+      setPasswordAgeLimitDays(days);
+      callbacks.renderEntries();
+      toast(`Password age limit set to ${days} days.`);
+    } catch (error) {
+      input.value = String(getPasswordAgeLimitDays());
       fail(error);
     }
   });
@@ -431,6 +447,7 @@ export function openEntryModal(entry?: EntryDetails) {
       favorite: data.get("favorite") === "on",
       totpSecret: null,
       updatedAt: Date.now(),
+      passwordChangedAt: entry?.passwordChangedAt ?? Date.now(),
     };
     const submit = $<HTMLButtonElement>('button[type="submit"]', form);
     const message = $("#entry-message");

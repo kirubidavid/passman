@@ -63,6 +63,8 @@ pub(crate) struct Entry {
     #[serde(default)]
     pub(crate) favorite: bool,
     pub(crate) updated_at: u64,
+    #[serde(default)]
+    pub(crate) password_changed_at: u64,
 }
 
 fn deserialize_totp_secret<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -87,6 +89,7 @@ pub(crate) struct EntrySummary {
     has_totp: bool,
     favorite: bool,
     updated_at: u64,
+    password_changed_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,7 +103,16 @@ pub(crate) struct EntryDetails {
     notes: String,
     favorite: bool,
     updated_at: u64,
+    password_changed_at: u64,
     has_totp: bool,
+}
+
+fn password_changed_at(entry: &Entry) -> u64 {
+    if entry.password_changed_at == 0 {
+        entry.updated_at
+    } else {
+        entry.password_changed_at
+    }
 }
 
 impl From<&Entry> for EntryDetails {
@@ -114,6 +126,7 @@ impl From<&Entry> for EntryDetails {
             notes: entry.notes.clone(),
             favorite: entry.favorite,
             updated_at: entry.updated_at,
+            password_changed_at: password_changed_at(entry),
             has_totp: entry.totp_secret.is_some(),
         }
     }
@@ -129,6 +142,7 @@ impl From<&Entry> for EntrySummary {
             has_totp: entry.totp_secret.is_some(),
             favorite: entry.favorite,
             updated_at: entry.updated_at,
+            password_changed_at: password_changed_at(entry),
         }
     }
 }

@@ -249,6 +249,7 @@ mod tests {
             totp_secret: None,
             favorite: false,
             updated_at: 1,
+            password_changed_at: 1,
         }
     }
 

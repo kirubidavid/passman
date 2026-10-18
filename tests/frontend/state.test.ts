@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearUnlockedState,
   createAutoLock,
+  getPasswordAgeLimitDays,
   setAutoLockMinutes,
+  setPasswordAgeLimitDays,
   state,
 } from "../../src/state";
 
@@ -50,6 +52,7 @@ describe("vault locking state", () => {
         favorite: false,
         hasTotp: false,
         updatedAt: 1,
+        passwordChangedAt: 1,
       },
     ];
     state.generatedPassword = "temporary-secret";
@@ -62,5 +65,14 @@ describe("vault locking state", () => {
     expect(state.generatedPassword).toBe("");
     expect(state.searchTerm).toBe("");
     expect(state.passwordVisible).toBe(false);
+  });
+
+  it("defaults the password age limit to 90 days and validates changes", () => {
+    expect(getPasswordAgeLimitDays()).toBe(90);
+    setPasswordAgeLimitDays(120);
+    expect(getPasswordAgeLimitDays()).toBe(120);
+    expect(() => setPasswordAgeLimitDays(29)).toThrow(
+      "Password age must be between 30 and 3650 days.",
+    );
   });
 });

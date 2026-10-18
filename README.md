@@ -7,6 +7,7 @@ A local-first desktop password manager built with Rust, Tauri 2, and TypeScript.
 - Create and unlock a vault with a master password (minimum 12 characters).
 - Generate 8–128 character passwords with selectable uppercase, lowercase, number, and symbol sets. Rust uses rejection-sampled operating-system cryptographic randomness.
 - Save, search, edit, favorite, copy, and delete login entries.
+- Track password age independently from other entry edits, with green, yellow, and red indicators based on a configurable global limit that defaults to 90 days.
 - Store an optional authenticator setup key with an entry, then generate standards-based six-digit TOTP codes that refresh every 30 seconds.
 - Export and restore portable encrypted backups without exposing decrypted vault contents to the frontend.
 - Change the master password by verifying the current password and re-encrypting the vault with a fresh random salt.

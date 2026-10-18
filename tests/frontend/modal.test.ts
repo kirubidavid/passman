@@ -24,6 +24,7 @@ describe("modal cleanup", () => {
         favorite: false,
         hasTotp: true,
         updatedAt: 1,
+        passwordChangedAt: 1,
       },
     ];
     vaultApi.getTotpCode.mockResolvedValue({

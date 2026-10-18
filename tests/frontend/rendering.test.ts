@@ -19,6 +19,7 @@ import {
   authView,
   configureRendering,
   dashboardShell,
+  getPasswordAgeStatus,
   renderEntries,
 } from "../../src/rendering";
 import { state } from "../../src/state";
@@ -44,6 +45,7 @@ describe("vault rendering", () => {
         favorite: true,
         hasTotp: false,
         updatedAt: 2,
+        passwordChangedAt: 2,
       },
       {
         id: "bank",
@@ -53,6 +55,7 @@ describe("vault rendering", () => {
         favorite: false,
         hasTotp: false,
         updatedAt: 1,
+        passwordChangedAt: 1,
       },
     ];
     state.activeFilter = "All items";
@@ -89,6 +92,20 @@ describe("vault rendering", () => {
       "No matching passwords",
     );
     expect(document.querySelector("#section-count")?.textContent).toBe("0");
+  });
+
+  it("uses green, yellow, and red password-age thresholds", () => {
+    const now = 200 * 86_400_000;
+
+    expect(getPasswordAgeStatus(now - 59 * 86_400_000, 90, now).level).toBe(
+      "green",
+    );
+    expect(getPasswordAgeStatus(now - 60 * 86_400_000, 90, now).level).toBe(
+      "yellow",
+    );
+    expect(getPasswordAgeStatus(now - 91 * 86_400_000, 90, now).level).toBe(
+      "red",
+    );
   });
 
   it("surfaces unlock errors and re-enables the submit button", async () => {
