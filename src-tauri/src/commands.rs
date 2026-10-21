@@ -1,12 +1,13 @@
 use crate::{
     crypto::{derive_key, fresh_salt},
     models::{
-        AppState, CURRENT_KDF, Entry, EntryDetails, EntrySummary, MAX_ENTRIES, UnlockedVault,
-        VaultPreferences, VaultSnapshot, entry_details, evaluate_password_strength,
-        initialize_legacy_password_age_tracking, kdf_upgrade_available, summarize_entries,
+        AppState, CURRENT_KDF, Entry, EntryDetails, EntrySummary, MAX_ENTRIES, MAX_SSH_KEYS,
+        SshKey, SshKeyDetails, UnlockedVault, VaultPreferences, VaultSnapshot, entry_details,
+        evaluate_password_strength, initialize_legacy_password_age_tracking,
+        kdf_upgrade_available, ssh_key_details, summarize_entries,
     },
     persistence::{
-        load_vault, load_vault_data, persist, vault_path, write_vault, write_vault_with_kdf,
+        load_vault, persist, vault_path, write_vault, write_vault_with_kdf,
     },
     totp::{
         TotpResult, decode_normalized_totp_secret, decode_totp_secret, totp_code,
@@ -16,13 +17,14 @@ use crate::{
 use crate::{
     crypto::{derive_key_with_kdf, open, seal, seal_legacy_entries},
     models::{KEY_LEN, KdfAlgorithm, KdfParameters, VAULT_FILE, VaultFile},
-    persistence::{atomic_write, atomic_write_with},
+    persistence::{atomic_write, atomic_write_with, load_vault_data},
 };
 #[cfg(test)]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use data_encoding::BASE32_NOPAD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
+use ssh_key::{Algorithm as SshAlgorithm, HashAlg, LineEnding, PrivateKey, PublicKey};
 use std::fs;
 use tauri_plugin_dialog::DialogExt;
 #[cfg(test)]
@@ -232,6 +234,109 @@ fn current_time_millis() -> Result<u64, String> {
         .map_err(|_| "System time is outside the supported range".to_string())
 }
 
+fn generate_ed25519_ssh_key(
+    id: String,
+    title: String,
+    notes: String,
+    favorite: bool,
+    now: u64,
+) -> Result<SshKey, String> {
+    let title = title.trim().to_string();
+    if id.is_empty() || id.chars().count() > 200 {
+        return Err("SSH key identifier is invalid".into());
+    }
+
+    fn normalize_ed25519_ssh_key(
+        id: String,
+        title: String,
+        public_key: &str,
+        private_key: &str,
+        notes: String,
+        favorite: bool,
+        now: u64,
+    ) -> Result<SshKey, String> {
+        let title = title.trim().to_string();
+        if id.is_empty() || id.chars().count() > 200 {
+            return Err("SSH key identifier is invalid".into());
+        }
+        if title.is_empty() || title.chars().count() > 200 {
+            return Err("Enter an SSH key name of up to 200 characters".into());
+        }
+        if notes.chars().count() > 10_000 {
+            return Err("SSH key notes are too long".into());
+        }
+        let mut parsed_private = PrivateKey::from_openssh(private_key)
+            .map_err(|_| "Private key is not a valid OpenSSH private key".to_string())?;
+        let parsed_public = PublicKey::from_openssh(public_key)
+            .map_err(|_| "Public key is not a valid OpenSSH public key".to_string())?;
+        if parsed_private.algorithm() != SshAlgorithm::Ed25519
+            || parsed_public.algorithm() != SshAlgorithm::Ed25519
+        {
+            return Err("Only Ed25519 SSH keys are supported".into());
+        }
+        if parsed_private.public_key().key_data() != parsed_public.key_data() {
+            return Err("SSH public key does not match the private key".into());
+        }
+        parsed_private.set_comment(title.clone());
+        let normalized_public = parsed_private
+            .public_key()
+            .to_openssh()
+            .map_err(|error| format!("Could not encode SSH public key: {error}"))?;
+        let fingerprint = parsed_private
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
+        let encoded_private = parsed_private
+            .to_openssh(LineEnding::LF)
+            .map_err(|error| format!("Could not encode SSH private key: {error}"))?;
+        Ok(SshKey {
+            id,
+            title,
+            algorithm: "Ed25519".into(),
+            fingerprint,
+            public_key: normalized_public,
+            private_key: encoded_private.as_str().to_owned(),
+            notes,
+            favorite,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+    if title.is_empty() || title.chars().count() > 200 {
+        return Err("Enter an SSH key name of up to 200 characters".into());
+    }
+    if notes.chars().count() > 10_000 {
+        return Err("SSH key notes are too long".into());
+    }
+    let mut private_key = PrivateKey::random(&mut OsRng, SshAlgorithm::Ed25519)
+        .map_err(|error| format!("Could not generate SSH key: {error}"))?;
+    private_key.set_comment(title.clone());
+    let public_key = private_key
+        .public_key()
+        .to_openssh()
+        .map_err(|error| format!("Could not encode SSH public key: {error}"))?;
+    let fingerprint = private_key
+        .public_key()
+        .fingerprint(HashAlg::Sha256)
+        .to_string();
+    let encoded_private_key = private_key
+        .to_openssh(LineEnding::LF)
+        .map_err(|error| format!("Could not encode SSH private key: {error}"))?;
+    let private_key = encoded_private_key.as_str().to_owned();
+    Ok(SshKey {
+        id,
+        title,
+        algorithm: "Ed25519".into(),
+        fingerprint,
+        public_key,
+        private_key,
+        notes,
+        favorite,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VaultStatus {
@@ -289,6 +394,7 @@ pub(crate) fn create_vault(
         salt,
         kdf: CURRENT_KDF,
         entries,
+        ssh_keys: Vec::new(),
         preferences,
     });
     Ok(preferences)
@@ -311,6 +417,7 @@ pub(crate) fn unlock_vault(
             &key,
             &kdf,
             &data.entries,
+            &data.ssh_keys,
             &data.preferences,
         )?;
     }
@@ -325,6 +432,7 @@ pub(crate) fn unlock_vault(
         salt,
         kdf,
         entries: data.entries,
+        ssh_keys: data.ssh_keys,
         preferences,
     });
     Ok(preferences)
@@ -362,6 +470,7 @@ pub(crate) async fn export_backup(
         &vault.key,
         &vault.kdf,
         &vault.entries,
+        &vault.ssh_keys,
         &vault.preferences,
     )
     .map_err(|error| format!("Could not export backup: {error}"))?;
@@ -405,6 +514,7 @@ pub(crate) async fn import_backup(
             candidate.salt = salt;
             candidate.kdf = kdf;
             candidate.entries = data.entries;
+            candidate.ssh_keys = data.ssh_keys;
             candidate.preferences = data.preferences;
             Ok(())
         },
@@ -438,6 +548,7 @@ pub(crate) fn change_master_password(
     candidate.salt = salt;
     candidate.kdf = CURRENT_KDF;
     candidate.entries = data.entries;
+    candidate.ssh_keys = data.ssh_keys;
     candidate.preferences = data.preferences;
     persist(&path, &candidate)?;
     commit_vault_mutation(&state, expected_revision, candidate)?;
@@ -462,7 +573,7 @@ pub(crate) fn upgrade_kdf(
             .map_err(|_| "Current master password is incorrect".to_string())?;
     ensure_loaded_vault_matches_active(
         &candidate,
-        loaded_key.as_ref(),
+        &loaded_key,
         &loaded_salt,
         &loaded_kdf,
     )?;
@@ -519,6 +630,7 @@ pub(crate) async fn authenticated_reset_vault(
             &candidate.key,
             &candidate.kdf,
             &candidate.entries,
+            &candidate.ssh_keys,
             &candidate.preferences,
         )
         .map_err(|error| format!("Could not create final backup: {error}"))?;
@@ -684,6 +796,97 @@ pub(crate) fn remove_totp_secret(
             previous.zeroize();
         }
         Ok(summarize_entries(&vault.entries))
+    })
+}
+
+#[tauri::command]
+pub(crate) fn generate_ssh_key(
+    id: String,
+    title: String,
+    notes: String,
+    favorite: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<VaultSnapshot, String> {
+    let now = current_time_millis()?;
+    let ssh_key = generate_ed25519_ssh_key(id, title, notes, favorite, now)?;
+    let path = vault_path(&app)?;
+    persist_vault_mutation(&state, &path, move |vault| {
+        if vault.ssh_keys.len() >= MAX_SSH_KEYS {
+            return Err("Vault has reached its SSH key limit".into());
+        }
+
+        #[tauri::command]
+        pub(crate) fn store_ssh_key(
+            id: String,
+            title: String,
+            public_key: String,
+            private_key: String,
+            notes: String,
+            favorite: bool,
+            app: tauri::AppHandle,
+            state: tauri::State<'_, AppState>,
+        ) -> Result<VaultSnapshot, String> {
+            let public_key = Zeroizing::new(public_key);
+            let private_key = Zeroizing::new(private_key);
+            let ssh_key = normalize_ed25519_ssh_key(
+                id,
+                title,
+                public_key.as_str(),
+                private_key.as_str(),
+                notes,
+                favorite,
+                current_time_millis()?,
+            )?;
+            let path = vault_path(&app)?;
+            persist_vault_mutation(&state, &path, move |vault| {
+                if vault.ssh_keys.len() >= MAX_SSH_KEYS {
+                    return Err("Vault has reached its SSH key limit".into());
+                }
+                if vault.ssh_keys.iter().any(|key| key.id == ssh_key.id) {
+                    return Err("An SSH key with this identifier already exists".into());
+                }
+                vault.ssh_keys.push(ssh_key);
+                Ok(VaultSnapshot::from_vault(vault))
+            })
+        }
+        if vault.ssh_keys.iter().any(|key| key.id == ssh_key.id) {
+            return Err("An SSH key with this identifier already exists".into());
+        }
+        vault.ssh_keys.push(ssh_key);
+        Ok(VaultSnapshot::from_vault(vault))
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_ssh_key(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SshKeyDetails, String> {
+    with_vault(&state, |vault| {
+        vault
+            .ssh_keys
+            .iter()
+            .find(|key| key.id == id)
+            .map(ssh_key_details)
+            .ok_or_else(|| "SSH key not found".to_string())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn delete_ssh_key(
+    id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<VaultSnapshot, String> {
+    let path = vault_path(&app)?;
+    persist_vault_mutation(&state, &path, |vault| {
+        let previous_len = vault.ssh_keys.len();
+        vault.ssh_keys.retain(|key| key.id != id);
+        if vault.ssh_keys.len() == previous_len {
+            return Err("SSH key not found".into());
+        }
+        Ok(VaultSnapshot::from_vault(vault))
     })
 }
 
@@ -860,6 +1063,7 @@ mod tests {
             salt: [8_u8; crate::models::SALT_LEN],
             kdf: CURRENT_KDF,
             entries: vec![persistence_test_entry("original secret")],
+            ssh_keys: Vec::new(),
             preferences: VaultPreferences::default(),
         });
         state
@@ -876,6 +1080,7 @@ mod tests {
             salt,
             kdf: CURRENT_KDF,
             entries,
+            ssh_keys: Vec::new(),
             preferences: VaultPreferences::default(),
         });
         state
@@ -917,6 +1122,101 @@ mod tests {
     }
 
     #[test]
+    fn generated_ed25519_key_pair_is_valid_openssh_and_contains_no_passphrase() {
+        let generated = generate_ed25519_ssh_key(
+            "ssh-1".into(),
+            "Production server".into(),
+            "deploy key".into(),
+            true,
+            500,
+        )
+        .unwrap();
+        let parsed = PrivateKey::from_openssh(&generated.private_key).unwrap();
+
+        assert_eq!(generated.algorithm, "Ed25519");
+        assert!(generated.public_key.starts_with("ssh-ed25519 "));
+        assert_eq!(parsed.public_key().to_openssh().unwrap(), generated.public_key);
+        assert!(generated.fingerprint.starts_with("SHA256:"));
+        assert_eq!(generated.created_at, 500);
+        assert_eq!(generated.updated_at, 500);
+    }
+
+    #[test]
+    fn encrypted_vault_round_trips_generated_ssh_private_key() {
+        let directory = persistence_test_directory("ssh-key-round-trip");
+        let path = directory.join(VAULT_FILE);
+        let password = "ssh vault master password";
+        let state = persisted_smoke_state(&path, password, Vec::new());
+        let generated = generate_ed25519_ssh_key(
+            "ssh-1".into(),
+            "Production server".into(),
+            String::new(),
+            false,
+            500,
+        )
+        .unwrap();
+        let expected_private_key = generated.private_key.clone();
+
+        persist_vault_mutation(&state, &path, |vault| {
+            vault.ssh_keys.push(generated);
+            Ok(())
+        })
+        .unwrap();
+        *state.vault.lock().unwrap() = None;
+        let (_, _, _, data) = load_vault(&path, password).unwrap();
+
+        assert_eq!(data.ssh_keys.len(), 1);
+        assert_eq!(data.ssh_keys[0].private_key, expected_private_key);
+        remove_persistence_test_directory(&directory);
+    }
+
+    #[test]
+    fn stored_ssh_pair_must_be_ed25519_and_match() {
+        let first = generate_ed25519_ssh_key(
+            "first".into(),
+            "First".into(),
+            String::new(),
+            false,
+            1,
+        )
+        .unwrap();
+        let second = generate_ed25519_ssh_key(
+            "second".into(),
+            "Second".into(),
+            String::new(),
+            false,
+            1,
+        )
+        .unwrap();
+
+        assert!(
+            normalize_ed25519_ssh_key(
+                "stored".into(),
+                "Stored".into(),
+                &first.public_key,
+                &first.private_key,
+                String::new(),
+                false,
+                2,
+            )
+            .is_ok()
+        );
+        assert!(
+            normalize_ed25519_ssh_key(
+                "mismatch".into(),
+                "Mismatch".into(),
+                &first.public_key,
+                &second.private_key,
+                String::new(),
+                false,
+                2,
+            )
+            .unwrap_err()
+            .contains("does not match")
+        );
+    }
+
+    #[test]
     fn smoke_journey_create_save_lock_unlock_and_read() {
         let directory = persistence_test_directory("smoke-create-unlock");
         let path = directory.join(VAULT_FILE);
@@ -944,6 +1244,7 @@ mod tests {
             salt,
             kdf,
             entries: data.entries,
+            ssh_keys: data.ssh_keys,
             preferences: data.preferences,
         });
         let stored_password = with_vault(&state, |vault| {
@@ -979,6 +1280,7 @@ mod tests {
             &exported.key,
             &exported.kdf,
             &exported.entries,
+            &exported.ssh_keys,
             &exported.preferences,
         )
         .unwrap();
@@ -997,6 +1299,7 @@ mod tests {
                 candidate.salt = salt;
                 candidate.kdf = kdf;
                 candidate.entries = data.entries;
+                candidate.ssh_keys = data.ssh_keys;
                 candidate.preferences = data.preferences;
                 Ok(())
             },
@@ -1028,6 +1331,7 @@ mod tests {
         candidate.salt = salt;
         candidate.kdf = CURRENT_KDF;
         candidate.entries = data.entries;
+        candidate.ssh_keys = data.ssh_keys;
         candidate.preferences = data.preferences;
         persist(&path, &candidate).unwrap();
         commit_vault_mutation(&state, expected_revision, candidate).unwrap();
@@ -1248,7 +1552,7 @@ mod tests {
         }];
         let key = [7_u8; KEY_LEN];
         let preferences = VaultPreferences::default();
-        let (nonce, ciphertext) = seal(&key, &entries, &preferences).unwrap();
+        let (nonce, ciphertext) = seal(&key, &entries, &[], &preferences).unwrap();
         assert_eq!(
             open(&key, &nonce, &ciphertext).unwrap().entries[0].password,
             "secret"
@@ -1423,6 +1727,7 @@ mod tests {
             &alternate_key,
             &alternate_kdf,
             &entries,
+            &[],
             &VaultPreferences::default(),
         )
         .unwrap();
@@ -1443,7 +1748,7 @@ mod tests {
         let key = derive_key("metadata validation password", &salt).unwrap();
         let entries = vec![persistence_test_entry("secret")];
         let (nonce, ciphertext) =
-            seal(&key, &entries, &VaultPreferences::default()).unwrap();
+            seal(&key, &entries, &[], &VaultPreferences::default()).unwrap();
         let mut file = VaultFile {
             version: 2,
             kdf: Some(CURRENT_KDF),

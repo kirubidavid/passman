@@ -9,6 +9,7 @@ pub(crate) const SALT_LEN: usize = 16;
 pub(crate) const NONCE_LEN: usize = 24;
 pub(crate) const KEY_LEN: usize = 32;
 pub(crate) const MAX_ENTRIES: usize = 100_000;
+pub(crate) const MAX_SSH_KEYS: usize = 10_000;
 pub(crate) const CURRENT_VAULT_VERSION: u8 = 2;
 pub(crate) const DEFAULT_PASSWORD_AGE_LIMIT_DAYS: u32 = 90;
 pub(crate) const MIN_PASSWORD_AGE_LIMIT_DAYS: u32 = 30;
@@ -115,7 +116,51 @@ fn unknown_password_strength_score() -> u8 {
 pub(crate) struct VaultData {
     pub(crate) entries: Vec<Entry>,
     #[serde(default)]
+    pub(crate) ssh_keys: Vec<SshKey>,
+    #[serde(default)]
     pub(crate) preferences: VaultPreferences,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SshKey {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) algorithm: String,
+    pub(crate) fingerprint: String,
+    pub(crate) public_key: String,
+    pub(crate) private_key: String,
+    pub(crate) notes: String,
+    pub(crate) favorite: bool,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SshKeySummary {
+    id: String,
+    title: String,
+    algorithm: String,
+    fingerprint: String,
+    favorite: bool,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Serialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SshKeyDetails {
+    id: String,
+    title: String,
+    algorithm: String,
+    fingerprint: String,
+    public_key: String,
+    private_key: String,
+    notes: String,
+    favorite: bool,
+    created_at: u64,
+    updated_at: u64,
 }
 
 fn deserialize_totp_secret<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -168,6 +213,7 @@ pub(crate) struct EntryDetails {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VaultSnapshot {
     pub(crate) entries: Vec<EntrySummary>,
+    pub(crate) ssh_keys: Vec<SshKeySummary>,
     pub(crate) preferences: VaultPreferences,
     pub(crate) security_upgrade_available: bool,
 }
@@ -176,6 +222,7 @@ impl VaultSnapshot {
     pub(crate) fn from_vault(vault: &UnlockedVault) -> Self {
         Self {
             entries: summarize_entries(&vault.entries),
+            ssh_keys: summarize_ssh_keys(&vault.ssh_keys),
             preferences: vault.preferences,
             security_upgrade_available: kdf_upgrade_available(&vault.kdf),
         }
@@ -184,8 +231,38 @@ impl VaultSnapshot {
     pub(crate) fn from_data(data: &VaultData, kdf: &KdfParameters) -> Self {
         Self {
             entries: summarize_entries(&data.entries),
+            ssh_keys: summarize_ssh_keys(&data.ssh_keys),
             preferences: data.preferences,
             security_upgrade_available: kdf_upgrade_available(kdf),
+        }
+
+        pub(crate) fn summarize_ssh_keys(keys: &[SshKey]) -> Vec<SshKeySummary> {
+            keys.iter()
+                .map(|key| SshKeySummary {
+                    id: key.id.clone(),
+                    title: key.title.clone(),
+                    algorithm: key.algorithm.clone(),
+                    fingerprint: key.fingerprint.clone(),
+                    favorite: key.favorite,
+                    created_at: key.created_at,
+                    updated_at: key.updated_at,
+                })
+                .collect()
+        }
+
+        pub(crate) fn ssh_key_details(key: &SshKey) -> SshKeyDetails {
+            SshKeyDetails {
+                id: key.id.clone(),
+                title: key.title.clone(),
+                algorithm: key.algorithm.clone(),
+                fingerprint: key.fingerprint.clone(),
+                public_key: key.public_key.clone(),
+                private_key: key.private_key.clone(),
+                notes: key.notes.clone(),
+                favorite: key.favorite,
+                created_at: key.created_at,
+                updated_at: key.updated_at,
+            }
         }
     }
 }
@@ -302,6 +379,7 @@ pub(crate) struct UnlockedVault {
     pub(crate) salt: [u8; SALT_LEN],
     pub(crate) kdf: KdfParameters,
     pub(crate) entries: Vec<Entry>,
+    pub(crate) ssh_keys: Vec<SshKey>,
     pub(crate) preferences: VaultPreferences,
 }
 
@@ -366,5 +444,27 @@ mod tests {
         let mut outdated = CURRENT_KDF;
         outdated.iterations += 1;
         assert!(kdf_upgrade_available(&outdated));
+    }
+
+    #[test]
+    fn ssh_key_summaries_never_serialize_key_material() {
+        let key = SshKey {
+            id: "ssh-1".into(),
+            title: "Server".into(),
+            algorithm: "Ed25519".into(),
+            fingerprint: "SHA256:test".into(),
+            public_key: "ssh-ed25519 public".into(),
+            private_key: "private-secret".into(),
+            notes: String::new(),
+            favorite: false,
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let encoded = serde_json::to_string(&summarize_ssh_keys(&[key])).unwrap();
+
+        assert!(!encoded.contains("private-secret"));
+        assert!(!encoded.contains("ssh-ed25519 public"));
+        assert!(encoded.contains("SHA256:test"));
     }
 }

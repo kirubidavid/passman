@@ -12,6 +12,7 @@ import {
   state,
   type EntryDetails,
   type EntryInput,
+  type SshKeyDetails,
 } from "./state";
 import { $, escapeHtml, fail, icon, toast } from "./ui";
 import { vaultApi } from "./vault-api";
@@ -480,6 +481,88 @@ export async function showTotp(id: string) {
   } catch (error) {
     fail(error);
   }
+}
+
+export function openSshKeyModal() {
+  $("#modal-root").innerHTML =
+    `<div class="modal-backdrop" id="ssh-key-backdrop"><section class="entry-modal" role="dialog" aria-modal="true" aria-labelledby="ssh-key-title" aria-describedby="ssh-key-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">SSH KEY</p><h2 id="ssh-key-title">Add SSH key</h2></div><button class="icon-button" id="ssh-key-close" aria-label="Close">${icon("close", 19)}</button></div><p class="dialog-description" id="ssh-key-description">Generate an Ed25519 pair entirely in Rust or paste an existing matching OpenSSH pair. Private key material is stored only inside the encrypted vault.</p><form id="ssh-key-form" class="entry-form"><label>Key source<select name="source" id="ssh-key-source"><option value="generate">Generate a new Ed25519 pair</option><option value="existing">Store an existing OpenSSH pair</option></select></label><label>Key name <span>*</span><input name="title" maxlength="200" required placeholder="e.g. Production server" autofocus /></label><label>Algorithm<input value="Ed25519" disabled /></label><div id="existing-ssh-fields" hidden><label>Public key <span>*</span><textarea name="publicKey" rows="4" maxlength="2000" spellcheck="false" placeholder="ssh-ed25519 AAAA…"></textarea></label><label>Private key <span>*</span><textarea name="privateKey" rows="8" maxlength="20000" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label></div><label>Notes <span class="optional">OPTIONAL</span><textarea name="notes" maxlength="10000" rows="3" placeholder="Server, account, or usage notes"></textarea></label><label class="favorite-toggle"><input name="favorite" type="checkbox" /><span class="checkmark" aria-hidden="true"></span><span class="favorite-text">Add to favorites</span></label><p class="form-message" id="ssh-key-message" role="status" aria-live="polite"></p><div class="modal-footer"><button type="button" class="button button-quiet" id="ssh-key-cancel">Cancel</button><button type="submit" class="button button-primary">${icon("key", 16)} Generate and save</button></div></form></section></div>`;
+  const dismiss = () => closeModal();
+  $("#ssh-key-close").addEventListener("click", dismiss);
+  $("#ssh-key-cancel").addEventListener("click", dismiss);
+  $("#ssh-key-backdrop").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) dismiss();
+  });
+  $("#ssh-key-source").addEventListener("change", (event) => {
+    const existing =
+      (event.currentTarget as HTMLSelectElement).value === "existing";
+    $<HTMLElement>("#existing-ssh-fields").hidden = !existing;
+    $<HTMLTextAreaElement>('[name="publicKey"]').required = existing;
+    $<HTMLTextAreaElement>('[name="privateKey"]').required = existing;
+    $<HTMLButtonElement>('#ssh-key-form button[type="submit"]').innerHTML =
+      `${icon("key", 16)} ${existing ? "Validate and save" : "Generate and save"}`;
+  });
+  $("#ssh-key-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const submit = $<HTMLButtonElement>('button[type="submit"]', form);
+    const message = $("#ssh-key-message");
+    submit.disabled = true;
+    message.textContent = "Generating key pair securely...";
+    try {
+      const id = crypto.randomUUID();
+      const title = String(data.get("title") ?? "");
+      const notes = String(data.get("notes") ?? "");
+      const favorite = data.get("favorite") === "on";
+      const snapshot =
+        data.get("source") === "existing"
+          ? await vaultApi.storeSshKey(
+              id,
+              title,
+              String(data.get("publicKey") ?? ""),
+              String(data.get("privateKey") ?? ""),
+              notes,
+              favorite,
+            )
+          : await vaultApi.generateSshKey(id, title, notes, favorite);
+      applyVaultSnapshot(snapshot);
+      closeModal();
+      callbacks.setFilter("All items");
+      toast("SSH key generated and encrypted.");
+    } catch (error) {
+      submit.disabled = false;
+      message.textContent = String(error).replace(/^Error: /, "");
+      message.classList.add("error");
+    }
+  });
+  activateDialog(".entry-modal", '[name="title"]');
+}
+
+export function openSshKeyDetails(key: SshKeyDetails) {
+  $("#modal-root").innerHTML =
+    `<div class="modal-backdrop" id="ssh-details-backdrop"><section class="entry-modal ssh-key-modal" role="dialog" aria-modal="true" aria-labelledby="ssh-details-title" aria-describedby="ssh-details-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">SSH KEY · ${escapeHtml(key.algorithm)}</p><h2 id="ssh-details-title">${escapeHtml(key.title)}</h2></div><button class="icon-button" id="ssh-details-close" aria-label="Close">${icon("close", 19)}</button></div><p class="dialog-description" id="ssh-details-description">Private key material is shown only for this explicit view and is cleared from the interface when this dialog closes.</p><label>Fingerprint<code class="ssh-key-value">${escapeHtml(key.fingerprint)}</code></label><label>Public key<textarea id="ssh-public-key" class="ssh-key-text" rows="4" readonly spellcheck="false">${escapeHtml(key.publicKey)}</textarea></label><button type="button" class="button button-quiet" id="copy-ssh-public">${icon("copy", 15)} Copy public key</button><label>Private key<textarea id="ssh-private-key" class="ssh-key-text" rows="9" readonly spellcheck="false">Private key hidden</textarea></label><div class="ssh-key-actions"><button type="button" class="button button-quiet" id="reveal-ssh-private">${icon("eye", 15)} Reveal private key</button><button type="button" class="button button-quiet" id="copy-ssh-private">${icon("copy", 15)} Copy private key</button></div>${key.notes ? `<label>Notes<textarea rows="3" readonly>${escapeHtml(key.notes)}</textarea></label>` : ""}</section></div>`;
+  const privateArea = $<HTMLTextAreaElement>("#ssh-private-key");
+  const dismiss = () => {
+    privateArea.value = "";
+    closeModal();
+  };
+  $("#ssh-details-close").addEventListener("click", dismiss);
+  $("#ssh-details-backdrop").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) dismiss();
+  });
+  $("#copy-ssh-public").addEventListener("click", () => {
+    void copyText(key.publicKey);
+  });
+  $("#copy-ssh-private").addEventListener("click", () => {
+    void copyText(key.privateKey);
+  });
+  $("#reveal-ssh-private").addEventListener("click", () => {
+    privateArea.value =
+      privateArea.value === key.privateKey
+        ? "Private key hidden"
+        : key.privateKey;
+  });
+  activateDialog(".ssh-key-modal", "#copy-ssh-public", dismiss);
 }
 
 export function openEntryModal(entry?: EntryDetails) {

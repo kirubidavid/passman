@@ -4,8 +4,10 @@ const vaultApi = vi.hoisted(() => ({
   authenticatedReset: vi.fn(),
   exportBackup: vi.fn(),
   getTotpCode: vi.fn(),
+  generateSshKey: vi.fn(),
   importBackup: vi.fn(),
   setPreferences: vi.fn(),
+  storeSshKey: vi.fn(),
   upgradeKdf: vi.fn(),
 }));
 vi.mock("../../src/vault-api", () => ({ vaultApi }));
@@ -18,6 +20,7 @@ import {
   confirmAction,
   confirmPhraseAction,
   openVaultSettings,
+  openSshKeyModal,
   showTotp,
 } from "../../src/modal";
 import { getPasswordAgeLimitDays, state } from "../../src/state";
@@ -179,7 +182,9 @@ describe("modal cleanup", () => {
 
     document.querySelector<HTMLButtonElement>("#export-backup")?.click();
 
-    await vi.waitFor(() => expect(vaultApi.exportBackup).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(vaultApi.exportBackup).toHaveBeenCalledOnce(),
+    );
     expect(document.querySelector(".vault-settings-modal")).not.toBeNull();
   });
 
@@ -213,8 +218,9 @@ describe("modal cleanup", () => {
     });
     openVaultSettings();
     document.querySelector<HTMLButtonElement>("#authenticated-reset")?.click();
-    const password =
-      document.querySelector<HTMLInputElement>("#reset-master-password");
+    const password = document.querySelector<HTMLInputElement>(
+      "#reset-master-password",
+    );
     if (!password) throw new Error("Reset password input was not rendered");
     password.value = "current password";
 
@@ -240,9 +246,11 @@ describe("modal cleanup", () => {
     });
     openVaultSettings();
     document.querySelector<HTMLButtonElement>("#upgrade-kdf")?.click();
-    const password =
-      document.querySelector<HTMLInputElement>("#kdf-upgrade-password");
-    if (!password) throw new Error("KDF upgrade password input was not rendered");
+    const password = document.querySelector<HTMLInputElement>(
+      "#kdf-upgrade-password",
+    );
+    if (!password)
+      throw new Error("KDF upgrade password input was not rendered");
     password.value = "current password";
 
     document
@@ -253,5 +261,80 @@ describe("modal cleanup", () => {
       expect(vaultApi.upgradeKdf).toHaveBeenCalledWith("current password"),
     );
     expect(state.securityUpgradeAvailable).toBe(false);
+  });
+
+  it("generates and stores an Ed25519 key through Rust", async () => {
+    vaultApi.generateSshKey.mockResolvedValue({
+      entries: state.entries,
+      sshKeys: [
+        {
+          id: "ssh-1",
+          title: "Production server",
+          algorithm: "Ed25519",
+          fingerprint: "SHA256:test",
+          favorite: false,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      preferences: { passwordAgeLimitDays: 90 },
+    });
+    openSshKeyModal();
+    const title = document.querySelector<HTMLInputElement>('[name="title"]');
+    if (!title) throw new Error("SSH key title was not rendered");
+    title.value = "Production server";
+
+    document
+      .querySelector<HTMLFormElement>("#ssh-key-form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(vaultApi.generateSshKey).toHaveBeenCalledWith(
+        expect.any(String),
+        "Production server",
+        "",
+        false,
+      ),
+    );
+    expect(state.sshKeys[0]?.fingerprint).toBe("SHA256:test");
+    expect(document.querySelector("#ssh-key-form")).toBeNull();
+  });
+
+  it("sends pasted OpenSSH pairs to Rust for matching validation", async () => {
+    vaultApi.storeSshKey.mockResolvedValue({
+      entries: state.entries,
+      sshKeys: [],
+      preferences: { passwordAgeLimitDays: 90 },
+    });
+    openSshKeyModal();
+    const source = document.querySelector<HTMLSelectElement>("#ssh-key-source");
+    const title = document.querySelector<HTMLInputElement>('[name="title"]');
+    const publicKey =
+      document.querySelector<HTMLTextAreaElement>('[name="publicKey"]');
+    const privateKey = document.querySelector<HTMLTextAreaElement>(
+      '[name="privateKey"]',
+    );
+    if (!source || !title || !publicKey || !privateKey)
+      throw new Error("Existing SSH key fields were not rendered");
+    source.value = "existing";
+    source.dispatchEvent(new Event("change", { bubbles: true }));
+    title.value = "Existing server";
+    publicKey.value = "ssh-ed25519 public";
+    privateKey.value = "-----BEGIN OPENSSH PRIVATE KEY-----";
+
+    document
+      .querySelector<HTMLFormElement>("#ssh-key-form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(vaultApi.storeSshKey).toHaveBeenCalledWith(
+        expect.any(String),
+        "Existing server",
+        "ssh-ed25519 public",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "",
+        false,
+      ),
+    );
   });
 });

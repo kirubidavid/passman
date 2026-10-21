@@ -112,4 +112,48 @@ describe("frontend-to-Tauri command contracts", () => {
       ["recovery_reset_vault", { confirmationPhrase: "RESET VAULT" }],
     ]);
   });
+
+  it("generates, retrieves, and deletes SSH keys through explicit commands", async () => {
+    await vaultApi.generateSshKey(
+      "ssh-1",
+      "Production server",
+      "deploy key",
+      true,
+    );
+    await vaultApi.getSshKey("ssh-1");
+    await vaultApi.storeSshKey(
+      "ssh-2",
+      "Existing server",
+      "ssh-ed25519 public",
+      "private",
+      "",
+      false,
+    );
+    await vaultApi.deleteSshKey("ssh-1");
+
+    expect(invoke.mock.calls).toEqual([
+      [
+        "generate_ssh_key",
+        {
+          id: "ssh-1",
+          title: "Production server",
+          notes: "deploy key",
+          favorite: true,
+        },
+      ],
+      ["get_ssh_key", { id: "ssh-1" }],
+      [
+        "store_ssh_key",
+        {
+          id: "ssh-2",
+          title: "Existing server",
+          publicKey: "ssh-ed25519 public",
+          privateKey: "private",
+          notes: "",
+          favorite: false,
+        },
+      ],
+      ["delete_ssh_key", { id: "ssh-1" }],
+    ]);
+  });
 });

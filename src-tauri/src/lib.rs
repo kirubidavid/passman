@@ -29,6 +29,10 @@ pub fn run() {
             commands::get_totp_code,
             commands::set_totp_secret,
             commands::remove_totp_secret,
+            commands::generate_ssh_key,
+            commands::store_ssh_key,
+            commands::get_ssh_key,
+            commands::delete_ssh_key,
             commands::save_entry,
             commands::delete_entry,
             commands::generate_password

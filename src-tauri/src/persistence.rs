@@ -129,6 +129,7 @@ pub(crate) fn write_vault(
         key,
         &CURRENT_KDF,
         entries,
+        &[],
         &VaultPreferences::default(),
     )
 }
@@ -139,10 +140,11 @@ pub(crate) fn write_vault_with_kdf(
     key: &[u8; KEY_LEN],
     kdf: &KdfParameters,
     entries: &[Entry],
+    ssh_keys: &[crate::models::SshKey],
     preferences: &VaultPreferences,
 ) -> Result<(), String> {
     let preferences = preferences.validate()?;
-    let (nonce, ciphertext) = seal(key, entries, &preferences)?;
+    let (nonce, ciphertext) = seal(key, entries, ssh_keys, &preferences)?;
     let file = VaultFile {
         version: CURRENT_VAULT_VERSION,
         kdf: Some(*kdf),
@@ -229,6 +231,7 @@ pub(crate) fn persist(path: &PathBuf, vault: &UnlockedVault) -> Result<(), Strin
         &vault.key,
         &vault.kdf,
         &vault.entries,
+        &vault.ssh_keys,
         &vault.preferences,
     )
 }
@@ -287,6 +290,7 @@ mod tests {
             salt,
             kdf: CURRENT_KDF,
             entries: Vec::new(),
+            ssh_keys: Vec::new(),
             preferences: VaultPreferences {
                 password_age_limit_days: 120,
             },
@@ -365,7 +369,7 @@ mod tests {
         let key = derive_key("correct persistence password", &salt).unwrap();
         let entries = vec![entry("mail", "Mail", "secret")];
         let (nonce, ciphertext) =
-            seal(&key, &entries, &VaultPreferences::default()).unwrap();
+            seal(&key, &entries, &[], &VaultPreferences::default()).unwrap();
         let mut file = VaultFile {
             version: CURRENT_VAULT_VERSION,
             kdf: Some(CURRENT_KDF),
@@ -393,7 +397,7 @@ mod tests {
         let key = derive_key("envelope validation password", &salt).unwrap();
         let entries = vec![entry("mail", "Mail", "secret")];
         let (nonce, ciphertext) =
-            seal(&key, &entries, &VaultPreferences::default()).unwrap();
+            seal(&key, &entries, &[], &VaultPreferences::default()).unwrap();
         let mut file = VaultFile {
             version: CURRENT_VAULT_VERSION,
             kdf: Some(CURRENT_KDF),

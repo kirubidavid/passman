@@ -13,6 +13,8 @@ vi.mock("../../src/modal", () => ({
   confirmAction,
   confirmPhraseAction,
   openEntryModal: vi.fn(),
+  openSshKeyDetails: vi.fn(),
+  openSshKeyModal: vi.fn(),
   openVaultSettings: vi.fn(),
   showTotp: vi.fn(),
 }));
@@ -67,6 +69,7 @@ describe("vault rendering", () => {
       },
     ];
     state.activeFilter = "All items";
+    state.sshKeys = [];
     state.searchTerm = "";
     state.securityUpgradeAvailable = false;
   });
@@ -98,7 +101,7 @@ describe("vault rendering", () => {
     search.dispatchEvent(new Event("input", { bubbles: true }));
 
     expect(document.querySelector("#entries-area")?.textContent).toContain(
-      "No matching passwords",
+      "No matching vault items",
     );
     expect(document.querySelector("#section-count")?.textContent).toBe("0");
   });
@@ -111,6 +114,34 @@ describe("vault rendering", () => {
     expect(
       document.querySelector("#security-upgrade-banner")?.textContent,
     ).toContain("Security upgrade available.");
+  });
+
+  it("renders SSH metadata without exposing key material", () => {
+    state.entries = [];
+    state.sshKeys = [
+      {
+        id: "ssh-1",
+        title: "Production server",
+        algorithm: "Ed25519",
+        fingerprint: "SHA256:test",
+        favorite: false,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ];
+
+    dashboardShell();
+    setFilter("SSH keys");
+
+    expect(document.querySelector("#entries-area")?.textContent).toContain(
+      "Production server",
+    );
+    expect(document.querySelector("#entries-area")?.textContent).toContain(
+      "SHA256:test",
+    );
+    expect(document.querySelector("#entries-area")?.textContent).not.toContain(
+      "PRIVATE KEY",
+    );
   });
 
   it("uses green, yellow, and red password-age thresholds", () => {

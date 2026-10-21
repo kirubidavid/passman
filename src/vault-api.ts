@@ -5,6 +5,7 @@ import type {
   EntrySummary,
   GeneratorOptions,
   Status,
+  SshKeyDetails,
   TotpResult,
   VaultPreferences,
   VaultSnapshot,
@@ -45,6 +46,36 @@ export const vaultApi = {
   getTotpCode: (id: string) => invoke<TotpResult>("get_totp_code", { id }),
   generatePassword: (options: GeneratorOptions) =>
     invoke<string>("generate_password", { options }),
+  generateSshKey: (
+    id: string,
+    title: string,
+    notes: string,
+    favorite: boolean,
+  ) =>
+    invoke<VaultSnapshot>("generate_ssh_key", {
+      id,
+      title,
+      notes,
+      favorite,
+    }),
+  storeSshKey: (
+    id: string,
+    title: string,
+    publicKey: string,
+    privateKey: string,
+    notes: string,
+    favorite: boolean,
+  ) =>
+    invoke<VaultSnapshot>("store_ssh_key", {
+      id,
+      title,
+      publicKey,
+      privateKey,
+      notes,
+      favorite,
+    }),
+  getSshKey: (id: string) => invoke<SshKeyDetails>("get_ssh_key", { id }),
+  deleteSshKey: (id: string) => invoke<VaultSnapshot>("delete_ssh_key", { id }),
   exportBackup: () => invoke<string | null>("export_backup"),
   importBackup: (password: string) =>
     invoke<VaultSnapshot | null>("import_backup", { password }),

@@ -1,7 +1,7 @@
 use crate::{
     models::{
-        CURRENT_KDF, Entry, KEY_LEN, KdfAlgorithm, KdfParameters, MAX_ENTRIES, NONCE_LEN,
-        SALT_LEN, VaultData, VaultPreferences, evaluate_password_strength,
+        CURRENT_KDF, Entry, KEY_LEN, KdfAlgorithm, KdfParameters, MAX_ENTRIES, MAX_SSH_KEYS,
+        NONCE_LEN, SALT_LEN, SshKey, VaultData, VaultPreferences, evaluate_password_strength,
     },
     totp::decode_totp_secret,
 };
@@ -69,6 +69,7 @@ pub(crate) fn derive_key_with_kdf(
 pub(crate) fn seal(
     key: &[u8; KEY_LEN],
     entries: &[Entry],
+    ssh_keys: &[SshKey],
     preferences: &VaultPreferences,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut nonce = vec![0_u8; NONCE_LEN];
@@ -78,11 +79,13 @@ pub(crate) fn seal(
     #[serde(rename_all = "camelCase")]
     struct VaultDataRef<'a> {
         entries: &'a [Entry],
+        ssh_keys: &'a [SshKey],
         preferences: &'a VaultPreferences,
     }
     let plaintext = Zeroizing::new(
         serde_json::to_vec(&VaultDataRef {
             entries,
+            ssh_keys,
             preferences,
         })
         .map_err(|e| format!("Could not encode vault: {e}"))?,
@@ -124,6 +127,7 @@ pub(crate) fn open(
     let mut data = serde_json::from_slice::<VaultData>(plaintext.as_slice()).or_else(|_| {
         serde_json::from_slice::<Vec<Entry>>(plaintext.as_slice()).map(|entries| VaultData {
             entries,
+            ssh_keys: Vec::new(),
             preferences: VaultPreferences::default(),
         })
     })
@@ -131,6 +135,9 @@ pub(crate) fn open(
     let preferences = data.preferences.validate()?;
     if data.entries.len() > MAX_ENTRIES {
         return Err("Vault contains too many entries".into());
+    }
+    if data.ssh_keys.len() > MAX_SSH_KEYS {
+        return Err("Vault contains too many SSH keys".into());
     }
     if data.entries.iter().any(|entry| {
         entry.title.is_empty()
@@ -156,8 +163,24 @@ pub(crate) fn open(
             entry.password_strength_score = evaluate_password_strength(entry)?;
         }
     }
+    if data.ssh_keys.iter().any(|key| {
+        key.id.is_empty()
+            || key.id.chars().count() > 200
+            || key.title.trim().is_empty()
+            || key.title.chars().count() > 200
+            || key.algorithm != "Ed25519"
+            || key.fingerprint.chars().count() > 200
+            || !key.public_key.starts_with("ssh-ed25519 ")
+            || key.public_key.chars().count() > 2_000
+            || !key.private_key.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----")
+            || key.private_key.chars().count() > 20_000
+            || key.notes.chars().count() > 10_000
+    }) {
+        return Err("Vault contains invalid SSH key data".into());
+    }
     Ok(VaultData {
         entries: data.entries,
+        ssh_keys: data.ssh_keys,
         preferences,
     })
 }

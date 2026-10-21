@@ -4,10 +4,13 @@ import {
   confirmAction,
   confirmPhraseAction,
   openEntryModal,
+  openSshKeyDetails,
+  openSshKeyModal,
   openVaultSettings,
   showTotp,
 } from "./modal";
 import {
+  applyVaultSnapshot,
   getPasswordAgeLimitDays,
   setPasswordAgeLimitDays,
   state,
@@ -225,13 +228,14 @@ export function dashboardShell() {
           <button class="nav-item active" data-filter="All items">${icon("dots", 18)}<span>All items</span><span class="nav-count" id="total-count">0</span></button>
           <button class="nav-item" data-filter="Favorites">${icon("spark", 17)}<span>Favorites</span></button>
           <button class="nav-item" data-filter="Password health">${icon("shield", 17)}<span>Password health</span><span class="nav-count" id="health-nav-count">0</span></button>
+          <button class="nav-item" data-filter="SSH keys">${icon("key", 17)}<span>SSH keys</span><span class="nav-count" id="ssh-key-count">0</span></button>
         </nav>
         <div class="sidebar-rule"></div>
         <div class="sidebar-hint"><div class="hint-icon">${icon("shield", 17)}</div><strong>Private by design</strong><p>Your vault is encrypted on this device. Only you hold the key.</p></div>
         <div class="sidebar-bottom"><span class="avatar">${icon("lock", 15)}</span><div class="user-label"><strong>Personal vault</strong><span>Protected locally</span></div><button class="icon-button vault-settings-button" id="vault-settings" aria-label="Vault settings" title="Vault settings">${icon("settings", 17)}</button><button class="icon-button" id="lock-button" aria-label="Lock vault" title="Lock vault">${icon("lock", 17)}</button></div>
       </aside>
       <main class="main-content">
-        <header class="topbar"><div class="breadcrumb">Vault <span>/</span> <strong id="breadcrumb-current">All items</strong></div><div class="top-actions"><span class="secure-status"><span class="status-dot"></span> Vault secured</span><button class="button button-primary add-button" id="add-entry">${icon("plus", 16)}<span>New item</span></button></div></header>
+        <header class="topbar"><div class="breadcrumb">Vault <span>/</span> <strong id="breadcrumb-current">All items</strong></div><div class="top-actions"><span class="secure-status"><span class="status-dot"></span> Vault secured</span><button class="button button-quiet add-button" id="add-ssh-key">${icon("key", 16)}<span>New SSH key</span></button><button class="button button-primary add-button" id="add-entry">${icon("plus", 16)}<span>New password</span></button></div></header>
         <div class="content-inner">
           ${state.securityUpgradeAvailable ? `<button class="security-upgrade-banner" id="security-upgrade-banner" type="button">${icon("shield", 18)}<span><strong>Security upgrade available.</strong> Re-encrypt this vault with the current key-derivation parameters.</span></button>` : ""}
           <section class="welcome-row"><div><p class="eyebrow">YOUR PRIVATE SPACE</p><h1 id="page-title">All items <span class="title-count" id="heading-count">0</span></h1><p class="page-subtitle">Everything you need, securely in one place.</p></div><div class="header-decoration">${icon("shield", 26)}<span>Encrypted<br/>at rest</span></div></section>
@@ -240,12 +244,13 @@ export function dashboardShell() {
             <div class="generated-row"><code id="generated-output" class="generated-output" aria-live="polite">Generate a strong password</code><div class="generated-actions"><button class="icon-button" id="refresh-password" aria-label="Generate password" title="Generate password">${icon("refresh", 17)}</button><button class="icon-button" id="copy-generated" aria-label="Copy password" title="Copy password">${icon("copy", 17)}</button></div></div>
             <div class="generator-controls"><div class="length-control"><label for="password-length">LENGTH <strong id="length-value">20</strong></label><input id="password-length" type="range" min="8" max="64" value="20" /></div><div class="checks" role="group" aria-label="Character types"><label class="check-label"><input type="checkbox" id="opt-uppercase" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Uppercase <span aria-hidden="true">ABC</span></span></label><label class="check-label"><input type="checkbox" id="opt-lowercase" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Lowercase <span aria-hidden="true">abc</span></span></label><label class="check-label"><input type="checkbox" id="opt-numbers" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Numbers <span aria-hidden="true">123</span></span></label><label class="check-label"><input type="checkbox" id="opt-symbols" checked /><span class="checkmark" aria-hidden="true"></span><span class="check-text">Symbols <span aria-hidden="true">#$&</span></span></label></div><button class="button generate-button" id="generate-button">${icon("spark", 15)} Generate</button></div>
           </section>
-          <section class="vault-section"><div class="vault-section-head"><div><h2>Your passwords <span class="section-count" id="section-count">0</span></h2><p>Only you can see what’s inside.</p></div><div class="search-wrap">${icon("search", 16)}<input type="search" id="search-input" placeholder="Search passwords..." autocomplete="off" /><kbd>⌘ K</kbd></div></div><div class="password-health-summary" aria-label="Password health summary"><span class="health-summary-item health-summary-red"><strong id="health-expired-count">0</strong> Expired</span><span class="health-summary-item health-summary-yellow"><strong id="health-due-count">0</strong> Due soon</span><span class="health-summary-item health-summary-orange"><strong id="health-duplicate-count">0</strong> Duplicate</span><span class="health-summary-item health-summary-purple"><strong id="health-weak-count">0</strong> Weak</span></div><div id="entries-area"></div></section>
+          <section class="vault-section"><div class="vault-section-head"><div><h2>Your vault <span class="section-count" id="section-count">0</span></h2><p>Passwords and SSH keys, encrypted together.</p></div><div class="search-wrap">${icon("search", 16)}<input type="search" id="search-input" placeholder="Search vault..." autocomplete="off" /><kbd>⌘ K</kbd></div></div><div class="password-health-summary" aria-label="Password health summary"><span class="health-summary-item health-summary-red"><strong id="health-expired-count">0</strong> Expired</span><span class="health-summary-item health-summary-yellow"><strong id="health-due-count">0</strong> Due soon</span><span class="health-summary-item health-summary-orange"><strong id="health-duplicate-count">0</strong> Duplicate</span><span class="health-summary-item health-summary-purple"><strong id="health-weak-count">0</strong> Weak</span></div><div id="entries-area"></div></section>
         </div>
         <footer class="main-footer"><span>${icon("lock", 13)} Your data stays yours. Always.</span><span>Encrypted locally on this device</span></footer>
       </main>
     </div><div id="modal-root"></div>`;
   $("#add-entry").addEventListener("click", () => openEntryModal());
+  $("#add-ssh-key").addEventListener("click", openSshKeyModal);
   $("#generate-button").addEventListener(
     "click",
     () => void generatePassword(),
@@ -292,7 +297,9 @@ export function setFilter(filter: string) {
       ? "Favorites"
       : filter === "Password health"
         ? "Password health"
-        : "All items";
+        : filter === "SSH keys"
+          ? "SSH keys"
+          : "All items";
   $("#breadcrumb-current").textContent = title;
   const titleText = $("#page-title").firstChild;
   if (!titleText) throw new Error("Missing page title text");
@@ -309,24 +316,39 @@ export function renderEntries() {
   $("#health-nav-count").textContent = String(
     state.entries.filter((entry) => getEntryHealth(entry).hasIssue).length,
   );
+  $("#ssh-key-count").textContent = String(state.sshKeys.length);
   const filtered = state.entries.filter((entry) => {
     const matchesSearch = `${entry.title} ${entry.username} ${entry.website}`
       .toLowerCase()
       .includes(state.searchTerm);
     return (
       matchesSearch &&
+      state.activeFilter !== "SSH keys" &&
       (state.activeFilter !== "Favorites" || entry.favorite) &&
       (state.activeFilter !== "Password health" ||
         getEntryHealth(entry).hasIssue)
     );
   });
-  $("#total-count").textContent = String(state.entries.length);
-  $("#heading-count").textContent = String(filtered.length);
-  $("#section-count").textContent = String(filtered.length);
+  const filteredSshKeys = state.sshKeys.filter((key) => {
+    const matchesSearch = `${key.title} ${key.algorithm} ${key.fingerprint}`
+      .toLowerCase()
+      .includes(state.searchTerm);
+    return (
+      matchesSearch &&
+      state.activeFilter !== "Password health" &&
+      (state.activeFilter !== "Favorites" || key.favorite)
+    );
+  });
+  const visibleCount = filtered.length + filteredSshKeys.length;
+  $("#total-count").textContent = String(
+    state.entries.length + state.sshKeys.length,
+  );
+  $("#heading-count").textContent = String(visibleCount);
+  $("#section-count").textContent = String(visibleCount);
   const area = $("#entries-area");
-  if (filtered.length === 0) {
+  if (visibleCount === 0) {
     const searching = state.searchTerm.length > 0;
-    area.innerHTML = `<div class="empty-state"><div class="empty-illustration">${icon(searching ? "search" : state.activeFilter === "Password health" ? "shield" : "key", 26)}</div><h3>${searching ? "No matching passwords" : state.activeFilter === "Favorites" ? "No favorites yet" : state.activeFilter === "Password health" ? "No password health issues" : "Your vault is ready."}</h3><p>${searching ? "Try searching with a different name or username." : state.activeFilter === "Favorites" ? "Mark an item as a favorite to see it here." : state.activeFilter === "Password health" ? "No expired, due-soon, duplicate, or weak passwords were found." : "Save a login or generate a new password to get started."}</p>${!searching && state.activeFilter === "All items" ? `<button class="button button-primary" id="empty-add">${icon("plus", 15)} Add your first item</button>` : ""}</div>`;
+    area.innerHTML = `<div class="empty-state"><div class="empty-illustration">${icon(searching ? "search" : state.activeFilter === "Password health" ? "shield" : "key", 26)}</div><h3>${searching ? "No matching vault items" : state.activeFilter === "Favorites" ? "No favorites yet" : state.activeFilter === "Password health" ? "No password health issues" : state.activeFilter === "SSH keys" ? "No SSH keys yet" : "Your vault is ready."}</h3><p>${searching ? "Try searching with a different name, username, or fingerprint." : state.activeFilter === "Favorites" ? "Mark an item as a favorite to see it here." : state.activeFilter === "Password health" ? "No expired, due-soon, duplicate, or weak passwords were found." : state.activeFilter === "SSH keys" ? "Generate an Ed25519 key pair to get started." : "Save a login or generate an SSH key to get started."}</p>${!searching && state.activeFilter === "All items" ? `<button class="button button-primary" id="empty-add">${icon("plus", 15)} Add your first password</button>` : ""}</div>`;
     area
       .querySelector<HTMLButtonElement>("#empty-add")
       ?.addEventListener("click", () => {
@@ -345,6 +367,12 @@ export function renderEntries() {
       const id = escapeHtml(entry.id);
       const health = getEntryHealth(entry);
       return `<article class="entry-card" data-entry-id="${id}"><div class="entry-monogram">${escapeHtml(favicon(entry.title))}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(entry.title)}</h3>${entry.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(entry.username || "No username")}</p></div><div class="entry-site">${entry.website ? `${icon("globe", 14)}<span>${escapeHtml(getHostname(entry.website))}</span>` : '<span class="site-empty">No website</span>'}</div><div class="entry-updated">${timeLabel(entry.updatedAt)}</div><div class="entry-row-actions">${entry.hasTotp ? `<button class="icon-button entry-totp" data-id="${id}" aria-label="Show authenticator code" title="Authenticator code">${icon("key", 16)}</button>` : ""}<button class="icon-button entry-copy" data-id="${id}" aria-label="Copy password">${icon("copy", 16)}</button><button class="icon-button entry-edit" data-id="${id}" aria-label="Edit item">${icon("edit", 16)}</button><button class="icon-button entry-delete" data-id="${id}" aria-label="Delete item">${icon("trash", 16)}</button></div><div class="entry-password"><span class="password-age password-age-${health.age.level}" title="${escapeHtml(health.age.description)}" aria-label="${escapeHtml(health.age.description)}"><span class="password-age-dot" aria-hidden="true"></span>${health.age.label}</span>${health.age.estimated ? `<span class="health-label health-label-estimate">${health.age.estimateLabel}</span>` : ""}${health.duplicate ? '<span class="health-label health-label-duplicate">Duplicate</span>' : ""}${health.weak ? `<span class="health-label health-label-weak">Weak (${entry.passwordStrengthScore}/4)</span>` : ""}<span>${entry.hasTotp ? "Authenticator enabled" : "Password protected"}</span></div></article>`;
+    })
+    .join("")}${filteredSshKeys
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((key) => {
+      const id = escapeHtml(key.id);
+      return `<article class="entry-card ssh-key-card" data-ssh-key-id="${id}"><div class="entry-monogram">${icon("key", 18)}</div><div class="entry-info"><div class="entry-title-row"><h3>${escapeHtml(key.title)}</h3>${key.favorite ? '<span class="favorite-star">★</span>' : ""}</div><p>${escapeHtml(key.algorithm)} SSH key</p></div><div class="entry-site ssh-fingerprint"><span>${escapeHtml(key.fingerprint)}</span></div><div class="entry-updated">${timeLabel(key.updatedAt)}</div><div class="entry-row-actions"><button class="icon-button ssh-key-view" data-id="${id}" aria-label="View SSH key">${icon("eye", 16)}</button><button class="icon-button ssh-key-delete" data-id="${id}" aria-label="Delete SSH key">${icon("trash", 16)}</button></div><div class="entry-password"><span class="health-label ssh-key-label">SSH KEY</span><span>Private key encrypted in vault</span></div></article>`;
     })
     .join("")}</div>`;
   area.querySelectorAll<HTMLButtonElement>(".entry-copy").forEach((button) => {
@@ -389,6 +417,42 @@ export function renderEntries() {
           }))
         ) {
           await deleteEntry(entry.id);
+        }
+      });
+    });
+  area
+    .querySelectorAll<HTMLButtonElement>(".ssh-key-view")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!button.dataset.id) return;
+        try {
+          openSshKeyDetails(await vaultApi.getSshKey(button.dataset.id));
+        } catch (error) {
+          fail(error);
+        }
+      });
+    });
+  area
+    .querySelectorAll<HTMLButtonElement>(".ssh-key-delete")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        const key = state.sshKeys.find((item) => item.id === button.dataset.id);
+        if (
+          key &&
+          (await confirmAction({
+            title: `Delete ${key.title}?`,
+            description:
+              "This SSH public/private key pair will be permanently removed from your vault.",
+            confirmLabel: "Delete SSH key",
+          }))
+        ) {
+          try {
+            applyVaultSnapshot(await vaultApi.deleteSshKey(key.id));
+            renderEntries();
+            toast("SSH key removed from your vault.");
+          } catch (error) {
+            fail(error);
+          }
         }
       });
     });

@@ -827,6 +827,55 @@ textarea:focus-visible {
   outline: 0;
   transition: 0.15s;
 }
+
+.ssh-key-modal {
+  max-width: 720px;
+}
+
+.ssh-key-modal > label {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 1rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.ssh-key-value,
+.ssh-key-text {
+  overflow-wrap: anywhere;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.ssh-key-value {
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: #f7f8f5;
+}
+
+.ssh-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.65rem;
+}
+
+.ssh-fingerprint {
+  min-width: 0;
+}
+
+.ssh-fingerprint span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ssh-key-label {
+  color: var(--green);
+}
 .auth-form input:focus,
 .entry-form input:focus,
 .entry-form textarea:focus {

@@ -30,6 +30,22 @@ export interface EntryInput {
   passwordChangedAt: number;
 }
 
+export interface SshKeySummary {
+  id: string;
+  title: string;
+  algorithm: "Ed25519";
+  fingerprint: string;
+  favorite: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SshKeyDetails extends SshKeySummary {
+  publicKey: string;
+  privateKey: string;
+  notes: string;
+}
+
 export interface Status {
   exists: boolean;
   unlocked: boolean;
@@ -42,6 +58,7 @@ export interface VaultPreferences {
 
 export interface VaultSnapshot {
   entries: EntrySummary[];
+  sshKeys?: SshKeySummary[];
   preferences: VaultPreferences;
   securityUpgradeAvailable?: boolean;
 }
@@ -68,6 +85,7 @@ export const MAX_PASSWORD_AGE_LIMIT_DAYS = 3_650;
 
 export const state = {
   entries: [] as EntrySummary[],
+  sshKeys: [] as SshKeySummary[],
   activeFilter: "All items",
   searchTerm: "",
   generatedPassword: "",
@@ -80,6 +98,7 @@ export const state = {
 
 export function clearUnlockedState() {
   state.entries = [];
+  state.sshKeys = [];
   state.generatedPassword = "";
   state.searchTerm = "";
   state.passwordVisible = false;
@@ -121,6 +140,7 @@ export function setPasswordAgeLimitDays(days: number) {
 
 export function applyVaultSnapshot(snapshot: VaultSnapshot) {
   state.entries = snapshot.entries;
+  state.sshKeys = snapshot.sshKeys ?? [];
   state.preferences = snapshot.preferences;
   state.securityUpgradeAvailable = snapshot.securityUpgradeAvailable === true;
 }
