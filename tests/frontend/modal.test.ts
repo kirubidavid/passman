@@ -10,8 +10,11 @@ const vaultApi = vi.hoisted(() => ({
   storeSshKey: vi.fn(),
   upgradeKdf: vi.fn(),
 }));
+const clipboard = vi.hoisted(() => ({
+  copyText: vi.fn(),
+}));
 vi.mock("../../src/vault-api", () => ({ vaultApi }));
-vi.mock("../../src/clipboard", () => ({ copyText: vi.fn() }));
+vi.mock("../../src/clipboard", () => clipboard);
 vi.mock("../../src/generator", () => ({ generatePassword: vi.fn() }));
 
 import {
@@ -19,8 +22,9 @@ import {
   configureModal,
   confirmAction,
   confirmPhraseAction,
-  openVaultSettings,
+  openSshKeyDetails,
   openSshKeyModal,
+  openVaultSettings,
   showTotp,
 } from "../../src/modal";
 import { getPasswordAgeLimitDays, state } from "../../src/state";
@@ -30,6 +34,7 @@ describe("modal cleanup", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    clipboard.copyText.mockReset();
     document.body.innerHTML =
       '<input id="search-input" /><div id="modal-root"></div><div id="toast"></div>';
     state.entries = [
@@ -336,5 +341,52 @@ describe("modal cleanup", () => {
         false,
       ),
     );
+  });
+
+  it("keeps the SSH private key hidden until revealed and clears it on close", () => {
+    const key = {
+      id: "ssh-1",
+      title: "Production server",
+      algorithm: "Ed25519" as const,
+      fingerprint: "SHA256:fingerprint",
+      favorite: true,
+      createdAt: 1,
+      updatedAt: 2,
+      publicKey: "ssh-ed25519 public-key",
+      privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key",
+      notes: "Production host",
+    };
+
+    openSshKeyDetails(key);
+
+    const privateArea =
+      document.querySelector<HTMLTextAreaElement>("#ssh-private-key");
+    const revealButton = document.querySelector<HTMLButtonElement>(
+      "#reveal-ssh-private",
+    );
+    const copyPrivateButton =
+      document.querySelector<HTMLButtonElement>("#copy-ssh-private");
+    if (!privateArea || !revealButton || !copyPrivateButton)
+      throw new Error("SSH key detail controls were not rendered");
+
+    expect(privateArea.value).toBe("Private key hidden");
+    expect(copyPrivateButton.disabled).toBe(true);
+
+    revealButton.click();
+    expect(privateArea.value).toBe(key.privateKey);
+    expect(revealButton.getAttribute("aria-pressed")).toBe("true");
+    expect(copyPrivateButton.disabled).toBe(false);
+
+    copyPrivateButton.click();
+    expect(clipboard.copyText).toHaveBeenCalledWith(key.privateKey);
+
+    revealButton.click();
+    expect(privateArea.value).toBe("Private key hidden");
+    expect(copyPrivateButton.disabled).toBe(true);
+
+    revealButton.click();
+    document.querySelector<HTMLButtonElement>("#ssh-details-close")?.click();
+    expect(privateArea.value).toBe("");
+    expect(document.querySelector("#ssh-details-backdrop")).toBeNull();
   });
 });

@@ -2,17 +2,17 @@ import { copyText } from "./clipboard";
 import { generatePassword } from "./generator";
 import {
   AUTO_LOCK_OPTIONS,
-  MAX_PASSWORD_AGE_LIMIT_DAYS,
-  MIN_PASSWORD_AGE_LIMIT_DAYS,
   applyVaultSnapshot,
+  type EntryDetails,
+  type EntryInput,
   getAutoLockMinutes,
   getPasswordAgeLimitDays,
+  MAX_PASSWORD_AGE_LIMIT_DAYS,
+  MIN_PASSWORD_AGE_LIMIT_DAYS,
+  type SshKeyDetails,
   setAutoLockMinutes,
   setPasswordAgeLimitDays,
   state,
-  type EntryDetails,
-  type EntryInput,
-  type SshKeyDetails,
 } from "./state";
 import { $, escapeHtml, fail, icon, toast } from "./ui";
 import { vaultApi } from "./vault-api";
@@ -540,8 +540,10 @@ export function openSshKeyModal() {
 
 export function openSshKeyDetails(key: SshKeyDetails) {
   $("#modal-root").innerHTML =
-    `<div class="modal-backdrop" id="ssh-details-backdrop"><section class="entry-modal ssh-key-modal" role="dialog" aria-modal="true" aria-labelledby="ssh-details-title" aria-describedby="ssh-details-description" tabindex="-1"><div class="modal-head"><div><p class="eyebrow">SSH KEY · ${escapeHtml(key.algorithm)}</p><h2 id="ssh-details-title">${escapeHtml(key.title)}</h2></div><button class="icon-button" id="ssh-details-close" aria-label="Close">${icon("close", 19)}</button></div><p class="dialog-description" id="ssh-details-description">Private key material is shown only for this explicit view and is cleared from the interface when this dialog closes.</p><label>Fingerprint<code class="ssh-key-value">${escapeHtml(key.fingerprint)}</code></label><label>Public key<textarea id="ssh-public-key" class="ssh-key-text" rows="4" readonly spellcheck="false">${escapeHtml(key.publicKey)}</textarea></label><button type="button" class="button button-quiet" id="copy-ssh-public">${icon("copy", 15)} Copy public key</button><label>Private key<textarea id="ssh-private-key" class="ssh-key-text" rows="9" readonly spellcheck="false">Private key hidden</textarea></label><div class="ssh-key-actions"><button type="button" class="button button-quiet" id="reveal-ssh-private">${icon("eye", 15)} Reveal private key</button><button type="button" class="button button-quiet" id="copy-ssh-private">${icon("copy", 15)} Copy private key</button></div>${key.notes ? `<label>Notes<textarea rows="3" readonly>${escapeHtml(key.notes)}</textarea></label>` : ""}</section></div>`;
+    `<div class="modal-backdrop" id="ssh-details-backdrop"><section class="entry-modal ssh-details-modal" role="dialog" aria-modal="true" aria-labelledby="ssh-details-title" aria-describedby="ssh-details-description" tabindex="-1"><header class="ssh-details-header"><div class="ssh-details-mark">${icon("key", 22)}</div><div class="ssh-details-heading"><p class="eyebrow">${escapeHtml(key.algorithm)} SSH KEY${key.favorite ? " · FAVORITE" : ""}</p><h2 id="ssh-details-title">${escapeHtml(key.title)}</h2><p id="ssh-details-description">Key material is encrypted in your vault. Reveal the private key only when needed.</p></div><button class="icon-button" id="ssh-details-close" type="button" aria-label="Close">${icon("close", 19)}</button></header><div class="ssh-details-content"><section class="ssh-detail-section"><div class="ssh-detail-label"><span>Fingerprint</span><span class="ssh-detail-hint">SHA-256</span></div><div class="ssh-fingerprint-row"><code class="ssh-key-value">${escapeHtml(key.fingerprint)}</code><button type="button" class="button button-quiet ssh-copy-button" id="copy-ssh-fingerprint">${icon("copy", 15)} Copy</button></div></section><section class="ssh-detail-section"><div class="ssh-detail-label"><label for="ssh-public-key">Public key</label><span class="ssh-detail-hint">Safe to share</span></div><textarea id="ssh-public-key" class="ssh-key-text" rows="3" readonly spellcheck="false" aria-label="Public SSH key">${escapeHtml(key.publicKey)}</textarea><div class="ssh-detail-actions"><button type="button" class="button button-quiet ssh-copy-button" id="copy-ssh-public">${icon("copy", 15)} Copy public key</button></div></section><section class="ssh-detail-section ssh-private-section"><div class="ssh-private-heading"><div><div class="ssh-detail-label"><label for="ssh-private-key">Private key</label></div><p>Keep this key secret. It will be hidden again when you close this window.</p></div><span class="ssh-protected-badge">${icon("lock", 13)} Encrypted</span></div><textarea id="ssh-private-key" class="ssh-key-text ssh-private-text" rows="6" readonly spellcheck="false" aria-label="Private SSH key" aria-live="polite">Private key hidden</textarea><div class="ssh-detail-actions"><button type="button" class="button button-primary ssh-copy-button" id="reveal-ssh-private" aria-pressed="false">${icon("eye", 15)} Reveal private key</button><button type="button" class="button button-quiet ssh-copy-button" id="copy-ssh-private" disabled>${icon("copy", 15)} Copy private key</button></div></section>${key.notes ? `<section class="ssh-detail-section ssh-notes-section"><div class="ssh-detail-label"><label for="ssh-key-notes">Notes</label></div><textarea id="ssh-key-notes" class="ssh-key-text" rows="2" readonly>${escapeHtml(key.notes)}</textarea></section>` : ""}<footer class="ssh-details-footer"><span>Last updated</span><time>${escapeHtml(new Date(key.updatedAt).toLocaleString())}</time></footer></div></section></div>`;
   const privateArea = $<HTMLTextAreaElement>("#ssh-private-key");
+  const revealButton = $<HTMLButtonElement>("#reveal-ssh-private");
+  const copyPrivateButton = $<HTMLButtonElement>("#copy-ssh-private");
   const dismiss = () => {
     privateArea.value = "";
     closeModal();
@@ -553,16 +555,20 @@ export function openSshKeyDetails(key: SshKeyDetails) {
   $("#copy-ssh-public").addEventListener("click", () => {
     void copyText(key.publicKey);
   });
-  $("#copy-ssh-private").addEventListener("click", () => {
-    void copyText(key.privateKey);
+  $("#copy-ssh-fingerprint").addEventListener("click", () => {
+    void copyText(key.fingerprint);
   });
-  $("#reveal-ssh-private").addEventListener("click", () => {
-    privateArea.value =
-      privateArea.value === key.privateKey
-        ? "Private key hidden"
-        : key.privateKey;
+  copyPrivateButton.addEventListener("click", () => {
+    if (privateArea.value === key.privateKey) void copyText(key.privateKey);
   });
-  activateDialog(".ssh-key-modal", "#copy-ssh-public", dismiss);
+  revealButton.addEventListener("click", () => {
+    const revealed = privateArea.value !== key.privateKey;
+    privateArea.value = revealed ? key.privateKey : "Private key hidden";
+    revealButton.innerHTML = `${icon(revealed ? "lock" : "eye", 15)} ${revealed ? "Hide private key" : "Reveal private key"}`;
+    revealButton.setAttribute("aria-pressed", String(revealed));
+    copyPrivateButton.disabled = !revealed;
+  });
+  activateDialog(".ssh-details-modal", "#copy-ssh-public", dismiss);
 }
 
 export function openEntryModal(entry?: EntryDetails) {

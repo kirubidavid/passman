@@ -24,7 +24,11 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use data_encoding::BASE32_NOPAD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
-use ssh_key::{Algorithm as SshAlgorithm, HashAlg, LineEnding, PrivateKey, PublicKey};
+use ssh_key::{
+    Algorithm as SshAlgorithm, HashAlg, LineEnding, PrivateKey, PublicKey,
+    getrandom::SysRng,
+    rand_core::UnwrapErr,
+};
 use std::fs;
 use tauri_plugin_dialog::DialogExt;
 #[cfg(test)]
@@ -95,13 +99,13 @@ fn verify_current_master_password(
 
 fn ensure_loaded_vault_matches_active(
     active: &UnlockedVault,
-    loaded_key: &[u8; crate::models::KEY_LEN],
+    loaded_key: &[u8],
     loaded_salt: &[u8; crate::models::SALT_LEN],
     loaded_kdf: &crate::models::KdfParameters,
 ) -> Result<(), String> {
     if &active.salt != loaded_salt
         || &active.kdf != loaded_kdf
-        || active.key.iter().ne(loaded_key.iter())
+        || active.key.as_ref() != loaded_key
     {
         return Err(
             "Vault metadata no longer matches the active key; lock and unlock the vault before retrying"
@@ -234,6 +238,63 @@ fn current_time_millis() -> Result<u64, String> {
         .map_err(|_| "System time is outside the supported range".to_string())
 }
 
+fn normalize_ed25519_ssh_key(
+    id: String,
+    title: String,
+    public_key: &str,
+    private_key: &str,
+    notes: String,
+    favorite: bool,
+    now: u64,
+) -> Result<SshKey, String> {
+    let title = title.trim().to_string();
+    if id.is_empty() || id.chars().count() > 200 {
+        return Err("SSH key identifier is invalid".into());
+    }
+    if title.is_empty() || title.chars().count() > 200 {
+        return Err("Enter an SSH key name of up to 200 characters".into());
+    }
+    if notes.chars().count() > 10_000 {
+        return Err("SSH key notes are too long".into());
+    }
+    let mut parsed_private = PrivateKey::from_openssh(private_key)
+        .map_err(|_| "Private key is not a valid OpenSSH private key".to_string())?;
+    let parsed_public = PublicKey::from_openssh(public_key)
+        .map_err(|_| "Public key is not a valid OpenSSH public key".to_string())?;
+    if parsed_private.algorithm() != SshAlgorithm::Ed25519
+        || parsed_public.algorithm() != SshAlgorithm::Ed25519
+    {
+        return Err("Only Ed25519 SSH keys are supported".into());
+    }
+    if parsed_private.public_key().key_data() != parsed_public.key_data() {
+        return Err("SSH public key does not match the private key".into());
+    }
+    parsed_private.set_comment(title.clone());
+    let normalized_public = parsed_private
+        .public_key()
+        .to_openssh()
+        .map_err(|error| format!("Could not encode SSH public key: {error}"))?;
+    let fingerprint = parsed_private
+        .public_key()
+        .fingerprint(HashAlg::Sha256)
+        .to_string();
+    let encoded_private = parsed_private
+        .to_openssh(LineEnding::LF)
+        .map_err(|error| format!("Could not encode SSH private key: {error}"))?;
+    Ok(SshKey {
+        id,
+        title,
+        algorithm: "Ed25519".into(),
+        fingerprint,
+        public_key: normalized_public,
+        private_key: encoded_private.as_str().to_owned(),
+        notes,
+        favorite,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
 fn generate_ed25519_ssh_key(
     id: String,
     title: String,
@@ -245,96 +306,32 @@ fn generate_ed25519_ssh_key(
     if id.is_empty() || id.chars().count() > 200 {
         return Err("SSH key identifier is invalid".into());
     }
-
-    fn normalize_ed25519_ssh_key(
-        id: String,
-        title: String,
-        public_key: &str,
-        private_key: &str,
-        notes: String,
-        favorite: bool,
-        now: u64,
-    ) -> Result<SshKey, String> {
-        let title = title.trim().to_string();
-        if id.is_empty() || id.chars().count() > 200 {
-            return Err("SSH key identifier is invalid".into());
-        }
-        if title.is_empty() || title.chars().count() > 200 {
-            return Err("Enter an SSH key name of up to 200 characters".into());
-        }
-        if notes.chars().count() > 10_000 {
-            return Err("SSH key notes are too long".into());
-        }
-        let mut parsed_private = PrivateKey::from_openssh(private_key)
-            .map_err(|_| "Private key is not a valid OpenSSH private key".to_string())?;
-        let parsed_public = PublicKey::from_openssh(public_key)
-            .map_err(|_| "Public key is not a valid OpenSSH public key".to_string())?;
-        if parsed_private.algorithm() != SshAlgorithm::Ed25519
-            || parsed_public.algorithm() != SshAlgorithm::Ed25519
-        {
-            return Err("Only Ed25519 SSH keys are supported".into());
-        }
-        if parsed_private.public_key().key_data() != parsed_public.key_data() {
-            return Err("SSH public key does not match the private key".into());
-        }
-        parsed_private.set_comment(title.clone());
-        let normalized_public = parsed_private
-            .public_key()
-            .to_openssh()
-            .map_err(|error| format!("Could not encode SSH public key: {error}"))?;
-        let fingerprint = parsed_private
-            .public_key()
-            .fingerprint(HashAlg::Sha256)
-            .to_string();
-        let encoded_private = parsed_private
-            .to_openssh(LineEnding::LF)
-            .map_err(|error| format!("Could not encode SSH private key: {error}"))?;
-        Ok(SshKey {
-            id,
-            title,
-            algorithm: "Ed25519".into(),
-            fingerprint,
-            public_key: normalized_public,
-            private_key: encoded_private.as_str().to_owned(),
-            notes,
-            favorite,
-            created_at: now,
-            updated_at: now,
-        })
-    }
     if title.is_empty() || title.chars().count() > 200 {
         return Err("Enter an SSH key name of up to 200 characters".into());
     }
     if notes.chars().count() > 10_000 {
         return Err("SSH key notes are too long".into());
     }
-    let mut private_key = PrivateKey::random(&mut OsRng, SshAlgorithm::Ed25519)
+    let mut rng = UnwrapErr(SysRng);
+    let mut private_key = PrivateKey::random(&mut rng, SshAlgorithm::Ed25519)
         .map_err(|error| format!("Could not generate SSH key: {error}"))?;
     private_key.set_comment(title.clone());
     let public_key = private_key
         .public_key()
         .to_openssh()
         .map_err(|error| format!("Could not encode SSH public key: {error}"))?;
-    let fingerprint = private_key
-        .public_key()
-        .fingerprint(HashAlg::Sha256)
-        .to_string();
     let encoded_private_key = private_key
         .to_openssh(LineEnding::LF)
         .map_err(|error| format!("Could not encode SSH private key: {error}"))?;
-    let private_key = encoded_private_key.as_str().to_owned();
-    Ok(SshKey {
+    normalize_ed25519_ssh_key(
         id,
         title,
-        algorithm: "Ed25519".into(),
-        fingerprint,
-        public_key,
-        private_key,
+        public_key.as_str(),
+        encoded_private_key.as_str(),
         notes,
         favorite,
-        created_at: now,
-        updated_at: now,
-    })
+        now,
+    )
 }
 
 #[derive(Serialize)]
@@ -573,7 +570,7 @@ pub(crate) fn upgrade_kdf(
             .map_err(|_| "Current master password is incorrect".to_string())?;
     ensure_loaded_vault_matches_active(
         &candidate,
-        &loaded_key,
+        loaded_key.as_ref(),
         &loaded_salt,
         &loaded_kdf,
     )?;
@@ -815,40 +812,40 @@ pub(crate) fn generate_ssh_key(
         if vault.ssh_keys.len() >= MAX_SSH_KEYS {
             return Err("Vault has reached its SSH key limit".into());
         }
+        if vault.ssh_keys.iter().any(|key| key.id == ssh_key.id) {
+            return Err("An SSH key with this identifier already exists".into());
+        }
+        vault.ssh_keys.push(ssh_key);
+        Ok(VaultSnapshot::from_vault(vault))
+    })
+}
 
-        #[tauri::command]
-        pub(crate) fn store_ssh_key(
-            id: String,
-            title: String,
-            public_key: String,
-            private_key: String,
-            notes: String,
-            favorite: bool,
-            app: tauri::AppHandle,
-            state: tauri::State<'_, AppState>,
-        ) -> Result<VaultSnapshot, String> {
-            let public_key = Zeroizing::new(public_key);
-            let private_key = Zeroizing::new(private_key);
-            let ssh_key = normalize_ed25519_ssh_key(
-                id,
-                title,
-                public_key.as_str(),
-                private_key.as_str(),
-                notes,
-                favorite,
-                current_time_millis()?,
-            )?;
-            let path = vault_path(&app)?;
-            persist_vault_mutation(&state, &path, move |vault| {
-                if vault.ssh_keys.len() >= MAX_SSH_KEYS {
-                    return Err("Vault has reached its SSH key limit".into());
-                }
-                if vault.ssh_keys.iter().any(|key| key.id == ssh_key.id) {
-                    return Err("An SSH key with this identifier already exists".into());
-                }
-                vault.ssh_keys.push(ssh_key);
-                Ok(VaultSnapshot::from_vault(vault))
-            })
+#[tauri::command]
+pub(crate) fn store_ssh_key(
+    id: String,
+    title: String,
+    public_key: String,
+    private_key: String,
+    notes: String,
+    favorite: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<VaultSnapshot, String> {
+    let public_key = Zeroizing::new(public_key);
+    let private_key = Zeroizing::new(private_key);
+    let ssh_key = normalize_ed25519_ssh_key(
+        id,
+        title,
+        public_key.as_str(),
+        private_key.as_str(),
+        notes,
+        favorite,
+        current_time_millis()?,
+    )?;
+    let path = vault_path(&app)?;
+    persist_vault_mutation(&state, &path, move |vault| {
+        if vault.ssh_keys.len() >= MAX_SSH_KEYS {
+            return Err("Vault has reached its SSH key limit".into());
         }
         if vault.ssh_keys.iter().any(|key| key.id == ssh_key.id) {
             return Err("An SSH key with this identifier already exists".into());

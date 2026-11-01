@@ -235,35 +235,35 @@ impl VaultSnapshot {
             preferences: data.preferences,
             security_upgrade_available: kdf_upgrade_available(kdf),
         }
+    }
+}
 
-        pub(crate) fn summarize_ssh_keys(keys: &[SshKey]) -> Vec<SshKeySummary> {
-            keys.iter()
-                .map(|key| SshKeySummary {
-                    id: key.id.clone(),
-                    title: key.title.clone(),
-                    algorithm: key.algorithm.clone(),
-                    fingerprint: key.fingerprint.clone(),
-                    favorite: key.favorite,
-                    created_at: key.created_at,
-                    updated_at: key.updated_at,
-                })
-                .collect()
-        }
+pub(crate) fn summarize_ssh_keys(keys: &[SshKey]) -> Vec<SshKeySummary> {
+    keys.iter()
+        .map(|key| SshKeySummary {
+            id: key.id.clone(),
+            title: key.title.clone(),
+            algorithm: key.algorithm.clone(),
+            fingerprint: key.fingerprint.clone(),
+            favorite: key.favorite,
+            created_at: key.created_at,
+            updated_at: key.updated_at,
+        })
+        .collect()
+}
 
-        pub(crate) fn ssh_key_details(key: &SshKey) -> SshKeyDetails {
-            SshKeyDetails {
-                id: key.id.clone(),
-                title: key.title.clone(),
-                algorithm: key.algorithm.clone(),
-                fingerprint: key.fingerprint.clone(),
-                public_key: key.public_key.clone(),
-                private_key: key.private_key.clone(),
-                notes: key.notes.clone(),
-                favorite: key.favorite,
-                created_at: key.created_at,
-                updated_at: key.updated_at,
-            }
-        }
+pub(crate) fn ssh_key_details(key: &SshKey) -> SshKeyDetails {
+    SshKeyDetails {
+        id: key.id.clone(),
+        title: key.title.clone(),
+        algorithm: key.algorithm.clone(),
+        fingerprint: key.fingerprint.clone(),
+        public_key: key.public_key.clone(),
+        private_key: key.private_key.clone(),
+        notes: key.notes.clone(),
+        favorite: key.favorite,
+        created_at: key.created_at,
+        updated_at: key.updated_at,
     }
 }
 

@@ -31,8 +31,8 @@ zeroize = { version = "1", features = ["derive"] }
 hmac = "0.12"
 sha1 = "0.10"
 data-encoding = "2"
+ssh-key = { version = "0.7.0-rc.11", features = ["ed25519", "getrandom"] }
 zxcvbn = "2"
-ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
